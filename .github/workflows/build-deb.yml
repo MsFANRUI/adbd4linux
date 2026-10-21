@@ -20,9 +20,34 @@ jobs:
           - arch: arm64
             runner: [self-hosted, rk3588]
     runs-on: ${{ matrix.runner }}
+    # The rk3588 runner uses a GnuTLS-backed Git/libcurl. Keep the transport
+    # on the broadly supported TLS 1.2 + HTTP/1.1 path for every Git process,
+    # including the Node action's child process (global gitconfig alone is not
+    # sufficient because checkout replaces HOME during initialization).
+    env:
+      GIT_SSL_VERSION: tlsv1.2
+      GIT_CONFIG_COUNT: 2
+      GIT_CONFIG_KEY_0: http.version
+      GIT_CONFIG_VALUE_0: HTTP/1.1
+      GIT_CONFIG_KEY_1: http.maxRequests
+      GIT_CONFIG_VALUE_1: "1"
     # Untrusted fork code must not run on the organization's self-hosted runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      # The self-hosted Orange Pi runner occasionally terminates GitHub's TLS
+      # connection while Git is negotiating HTTP/2. Configure the transport
+      # before checkout; checkout copies the runner's global config into its
+      # temporary HOME and uses these settings for the fetch and submodules.
+      - name: Configure Git transport
+        shell: bash
+        run: |
+          git config --global http.version HTTP/1.1
+          git config --global http.maxRequests 1
+          git config --global http.sslVersion tlsv1.2
+          git config --global http.postBuffer 524288000
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 600
+          git config --global core.compression 0
       - uses: actions/checkout@v4
         with:
           submodules: recursive
