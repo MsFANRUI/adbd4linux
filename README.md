@@ -62,15 +62,10 @@ Android framework authentication, TLS pairing, JDWP, mDNS, APK services and
 Android property-driven lifecycle are not provided. The daemon runs with the
 UID of its launcher. It is an unauthenticated development endpoint.
 
-USB uses `/dev/usb-ffs/adb/ep0`, `ep1` and `ep2`. The BSP must configure/mount
-FunctionFS and manage the gadget/UDC. This package intentionally installs no
-gadget manager or auto-start service; installing it must not reconfigure USB.
-The existing BSP launcher can launch `/usr/bin/adbd` once FunctionFS is prepared.
-However, the old BSP packages that launcher, service and module-load configuration
-inside its own package named `adbd`. They are not supplied by an independent BSP
-package. Replacing that package with this daemon-only package does not preserve
-the full startup integration. Migrate ownership of those files before deployment;
-this package is not yet a drop-in replacement for the old BSP package.
+USB uses `/dev/usb-ffs/adb/ep0`, `ep1` and `ep2`. The package includes the
+generic FunctionFS gadget manager (`usbdevice`), its systemd unit, and
+`/etc/default/adbd-gadget`, and enables the unit at sysinit. The BSP remains
+responsible for the USB controller/DTS and any board-specific gadget policy.
 
 | Environment variable | Meaning |
 | --- | --- |
@@ -105,5 +100,5 @@ explicit. A branch setting alone does not change the recorded submodule commit.
 CI builds amd64 on `ubuntu-22.04` and arm64 on `[self-hosted, rk3588]`, following
 libsoem. It tests the extracted package and publishes artifacts on each build.
 A tag must equal the **full Debian version**, e.g.
-`v1.0.41+git20250325.1cf2f017-2`. A Release is published only after both builds
+`v1.0.41+git20250325.1cf2f017-3`. A Release is published only after both builds
 and their protocol checks pass.

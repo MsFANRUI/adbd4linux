@@ -1,0 +1,187 @@
+#!/bin/sh -e
+#
+# usbdevice -- generic USB gadget bring-up for adbd, using configfs + FunctionFS.
+#
+# Board-agnostic: it binds to the first available USB Device Controller (UDC).
+# When no UDC exists (e.g. the port is in host mode) it is a harmless no-op, so
+# the associated service can be enabled unconditionally.
+#
+# Usage: usbdevice start|stop|status|restart
+#
+# Overridable defaults live in /etc/default/adbd-gadget.
+
+CONFIGFS=/sys/kernel/config
+GADGET_DIR="${CONFIGFS}/usb_gadget"
+FFS_MOUNTPOINT=/dev/usb-ffs/adb   # adbd expects its FunctionFS ep0 exactly here
+DEFAULTS=/etc/default/adbd-gadget
+ADBD=/usr/bin/adbd
+
+if [ -r "${DEFAULTS}" ]; then
+	# shellcheck disable=SC1090
+	. "${DEFAULTS}"
+fi
+
+GADGET_NAME="${ADBD_GADGET_NAME:-adbd}"
+G="${GADGET_DIR}/${GADGET_NAME}"
+
+idVendor="${ADBD_GADGET_IDVENDOR:-0x18d1}"   # Google
+idProduct="${ADBD_GADGET_IDPRODUCT:-0x4ee7}" # Google ADB interface
+bcdDevice="${ADBD_GADGET_BCDDEVICE:-0x0100}"
+
+dt_string() {
+	[ -r "/proc/device-tree/$1" ] || return 1
+	tr -d '\000' < "/proc/device-tree/$1"
+}
+
+default_serial() {
+	if s=$(dt_string serial-number) && [ -n "${s}" ]; then
+		printf '%s\n' "${s}"
+	elif [ -r /etc/machine-id ]; then
+		cat /etc/machine-id
+	else
+		printf '0123456789\n'
+	fi
+}
+
+# Identity comes from the device tree (the board itself) when available; there
+# is no invented vendor name. "Linux Foundation" is the standard USB gadget
+# manufacturer used by the kernel's own gadget examples.
+manufacturer="${ADBD_GADGET_MANUFACTURER:-$(dt_string manufacturer || dt_string model || printf 'Linux Foundation')}"
+product="${ADBD_GADGET_PRODUCT:-ADB Interface}"
+serialnumber="${ADBD_GADGET_SERIAL:-$(default_serial)}"
+
+first_udc() {
+	for udc in /sys/class/udc/*; do
+		[ -e "${udc}" ] || return 0
+		printf '%s\n' "${udc##*/}"
+		return 0
+	done
+}
+
+adbd_start() {
+	pidof adbd >/dev/null 2>&1 && return 0
+	ADBD_SHELL="${ADBD_SHELL:-/bin/bash}" setsid "${ADBD}" >/tmp/adbd.log 2>&1 &
+}
+
+adbd_stop() {
+	pkill -x adbd >/dev/null 2>&1 || true
+}
+
+ffs_mount() {
+	mkdir -p "${FFS_MOUNTPOINT}"
+	mountpoint -q "${FFS_MOUNTPOINT}" && return 0
+	mount -t functionfs adb "${FFS_MOUNTPOINT}" -o uid=2000,gid=2000
+}
+
+ffs_umount() {
+	mountpoint -q "${FFS_MOUNTPOINT}" || return 0
+	umount "${FFS_MOUNTPOINT}" >/dev/null 2>&1 || true
+}
+
+ffs_wait_ready() {
+	# adbd must write its descriptors before configfs can bind the function.
+	remaining=100
+	while [ "${remaining}" -gt 0 ]; do
+		if [ "$(cat "${G}/functions/ffs.adb/ready" 2>/dev/null)" = 1 ]; then
+			return 0
+		fi
+		sleep 0.1
+		remaining=$((remaining - 1))
+	done
+	echo "usbdevice: timed out waiting for adbd FunctionFS descriptors" >&2
+	return 1
+}
+
+gadget_start() {
+	udc=$(first_udc)
+	if [ -z "${udc}" ]; then
+		echo "usbdevice: no USB Device Controller; nothing to do"
+		return 0
+	fi
+
+	[ -d "${CONFIGFS}" ] || {
+		echo "usbdevice: configfs not available" >&2
+		return 1
+	}
+
+	if [ -d "${G}" ] && [ -n "$(cat "${G}/UDC" 2>/dev/null)" ]; then
+		echo "usbdevice: gadget already bound"
+		return 0
+	fi
+
+	# Clean partial setup on any error, preserving the original exit status.
+	trap 'rc=$?; trap - EXIT; set +e; if [ "${rc}" -ne 0 ]; then gadget_stop; fi; exit "${rc}"' EXIT
+	trap 'exit 1' HUP INT TERM
+
+	mkdir -p "${G}"
+	echo "${idVendor}" > "${G}/idVendor"
+	echo "${idProduct}" > "${G}/idProduct"
+	echo "${bcdDevice}" > "${G}/bcdDevice"
+	echo 0x0200 > "${G}/bcdUSB"
+
+	mkdir -p "${G}/strings/0x409"
+	echo "${manufacturer}" > "${G}/strings/0x409/manufacturer"
+	echo "${product}" > "${G}/strings/0x409/product"
+	echo "${serialnumber}" > "${G}/strings/0x409/serialnumber"
+
+	mkdir -p "${G}/configs/c.1/strings/0x409"
+	echo 500 > "${G}/configs/c.1/MaxPower"
+	echo "ADB" > "${G}/configs/c.1/strings/0x409/configuration"
+
+	mkdir -p "${G}/functions/ffs.adb"
+	ffs_mount
+	adbd_start
+	ffs_wait_ready
+
+	# FunctionFS must have published its descriptors before configfs accepts
+	# the function link. Removing a stale link also handles a failed prior boot.
+	rm -f "${G}/configs/c.1/ffs.adb"
+	ln -s "${G}/functions/ffs.adb" "${G}/configs/c.1/ffs.adb"
+
+	echo "${udc}" > "${G}/UDC"
+	echo "usbdevice: bound to ${udc}"
+	trap - EXIT HUP INT TERM
+}
+
+gadget_stop() {
+	if [ -d "${G}" ]; then
+		echo "" > "${G}/UDC" 2>/dev/null || true
+		adbd_stop
+		rm -f "${G}/configs/c.1/ffs.adb"
+		rmdir "${G}/configs/c.1/strings/0x409" 2>/dev/null || true
+		rmdir "${G}/configs/c.1" 2>/dev/null || true
+		rmdir "${G}/functions/ffs.adb" 2>/dev/null || true
+		rmdir "${G}/strings/0x409" 2>/dev/null || true
+		rmdir "${G}" 2>/dev/null || true
+	fi
+	ffs_umount
+	echo "usbdevice: stopped"
+}
+
+gadget_status() {
+	if [ -d "${G}" ] && [ -n "$(cat "${G}/UDC" 2>/dev/null)" ]; then
+		echo "usbdevice: active (udc=$(cat "${G}/UDC"))"
+	else
+		echo "usbdevice: inactive"
+	fi
+}
+
+case "${1:-status}" in
+	start)
+		gadget_start
+		;;
+	stop)
+		gadget_stop
+		;;
+	restart)
+		gadget_stop
+		gadget_start
+		;;
+	status)
+		gadget_status
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|status}" >&2
+		exit 1
+		;;
+esac

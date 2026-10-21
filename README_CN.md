@@ -50,13 +50,9 @@ python3 tests/smoke.py build/adbd
 TCP 转发和反向传输。不包含 Android 框架认证、TLS 配对、JDWP、mDNS、APK
 服务和 Android 属性驱动的生命周期。进程使用启动者的 UID，属于无认证开发接口。
 
-USB 使用 `/dev/usb-ffs/adb/ep0`、`ep1`、`ep2`。FunctionFS 挂载、gadget 和 UDC
-配置继续由 BSP 管理。本包只安装程序和文档，不安装自动启动服务，也不修改 USB。
-BSP 准备好 FunctionFS 后即可启动 `/usr/bin/adbd`。
-
-注意：旧 BSP 把启动脚本、service 和模块加载配置放在同名 `adbd` 包中，
-并不是由独立的 BSP 包提供。直接用当前纯守护进程包替换旧包，不能保留完整的
-启动集成。部署前必须迁移这些文件的包归属，当前还不能作为旧包的直接替代品。
+USB 使用 `/dev/usb-ffs/adb/ep0`、`ep1`、`ep2`。本包包含通用 FunctionFS
+gadget 管理器（`usbdevice`）、systemd unit 和 `/etc/default/adbd-gadget`，
+并在 sysinit 下启用该服务。USB 控制器/DTS 和板级 gadget 策略仍由 BSP 负责。
 
 | 环境变量 | 含义 |
 | --- | --- |
@@ -88,4 +84,4 @@ git -C adb checkout --detach origin/master
 CI 与 libsoem 一致：amd64 使用 `ubuntu-22.04`，arm64 使用
 `[self-hosted, rk3588]`。每次构建测试解包后的程序并上传产物，两个架构都通过后
 才发布 Release。标签必须匹配完整 Debian 版本，例如
-`v1.0.41+git20250325.1cf2f017-2`。
+`v1.0.41+git20250325.1cf2f017-3`。

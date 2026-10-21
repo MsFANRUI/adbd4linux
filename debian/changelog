@@ -1,3 +1,12 @@
+adbd (1.0.41+git20250325.1cf2f017-3) unstable; urgency=medium
+
+  * Include the generic FunctionFS gadget manager, systemd unit,
+    modules-load and profile configuration in the package so it is a
+    drop-in replacement for the old BSP adbd package.
+  * Enable usbdevice.service at sysinit through the packaged unit link.
+
+ -- RoboParty <2321901849@qq.com>  Thu, 22 Oct 2026 01:40:00 +0800
+
 adbd (1.0.41+git20250325.1cf2f017-2) unstable; urgency=medium
 
   * Install the scrcpy compatibility server and app_process shim.

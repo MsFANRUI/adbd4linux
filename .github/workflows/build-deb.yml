@@ -59,6 +59,9 @@ jobs:
         run: |
           multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
           ln -sfn "$multiarch/android-compat" build-package/usr/lib/android-compat
+          test -x build-package/usr/bin/usbdevice
+          test -f build-package/usr/lib/systemd/system/usbdevice.service
+          test "$(readlink build-package/etc/systemd/system/sysinit.target.wants/usbdevice.service)" = "/usr/lib/systemd/system/usbdevice.service"
           test "$(build-package/usr/bin/getprop ro.product.model)" = "RoboPi2"
           test "$(build-package/usr/bin/wm size)" = "Physical size: 1280x720"
           build-package/usr/bin/settings --help >/dev/null
