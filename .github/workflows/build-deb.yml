@@ -18,7 +18,7 @@ jobs:
           - arch: amd64
             runner: ubuntu-22.04
           - arch: arm64
-            runner: [self-hosted, rk3588]
+            runner: [self-hosted, Linux, ARM64, "24.04"]
     runs-on: ${{ matrix.runner }}
     # The rk3588 runner uses a GnuTLS-backed Git/libcurl. Keep the transport
     # on the broadly supported TLS 1.2 + HTTP/1.1 path for every Git process,
