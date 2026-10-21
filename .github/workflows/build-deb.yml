@@ -16,7 +16,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
           - arch: arm64
             runner: [self-hosted, Linux, ARM64, "24.04"]
     runs-on: ${{ matrix.runner }}
@@ -55,8 +55,7 @@ jobs:
           git config --global http.lowSpeedLimit 1000
           git config --global http.lowSpeedTime 600
           git config --global core.compression 0
-      - name: Print self-hosted runner network
-        if: matrix.arch == 'arm64'
+      - name: Print runner network
         shell: bash
         run: |
           echo "hostname=$(hostname) user=$(id -un)"
