@@ -55,14 +55,6 @@ jobs:
           git config --global http.lowSpeedLimit 1000
           git config --global http.lowSpeedTime 600
           git config --global core.compression 0
-      - name: Diagnose runner proxy endpoint
-        if: matrix.arch == 'arm64'
-        shell: bash
-        run: |
-          echo "runner=$(hostname) user=$(id -un)"
-          ss -ltnp 2>&1 | grep -E '(:15551|:5551)' || true
-          curl --noproxy '' --connect-timeout 5 --max-time 8 \
-            -x http://127.0.0.1:15551 -I https://github.com 2>&1 || true
       - uses: actions/checkout@v4
         with:
           submodules: recursive
