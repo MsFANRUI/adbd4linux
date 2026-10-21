@@ -26,10 +26,9 @@ jobs:
     # sufficient because checkout replaces HOME during initialization).
     env:
       GIT_SSL_VERSION: tlsv1.2
-      # Set the repository variable to the reachable HTTP proxy, for example
-      # http://10.43.21.127:15551 when the four-forward tunnel is LAN-bound.
-      # The A100-only loopback endpoint 127.0.0.1:15551 is not reachable from
-      # the separate robopi1 runner.
+      # For the arm64 runner, set GIT_HTTP_PROXY to
+      # http://127.0.0.1:15551. Windows forwards that runner-local port
+      # directly to its local HTTP proxy on 127.0.0.1:5551.
       GIT_HTTP_PROXY: ${{ matrix.arch == 'arm64' && vars.GIT_HTTP_PROXY || '' }}
       GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: http.version
