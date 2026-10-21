@@ -30,7 +30,7 @@ jobs:
       # http://10.43.21.127:15551 when the four-forward tunnel is LAN-bound.
       # The A100-only loopback endpoint 127.0.0.1:15551 is not reachable from
       # the separate robopi1 runner.
-      GIT_HTTP_PROXY: ${{ vars.GIT_HTTP_PROXY }}
+      GIT_HTTP_PROXY: ${{ matrix.arch == 'arm64' && vars.GIT_HTTP_PROXY || '' }}
       GIT_CONFIG_COUNT: 2
       GIT_CONFIG_KEY_0: http.version
       GIT_CONFIG_VALUE_0: HTTP/1.1
@@ -59,7 +59,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          http-proxy: ${{ vars.GIT_HTTP_PROXY }}
       - name: Check architecture and version
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
