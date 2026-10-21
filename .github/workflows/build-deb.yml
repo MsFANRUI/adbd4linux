@@ -55,15 +55,6 @@ jobs:
           git config --global http.lowSpeedLimit 1000
           git config --global http.lowSpeedTime 600
           git config --global core.compression 0
-      - name: Diagnose runner network identity
-        if: matrix.arch == 'arm64'
-        shell: bash
-        run: |
-          echo "hostname=$(hostname) user=$(id -un)"
-          hostname -I || true
-          ip -4 addr show || true
-          ip route || true
-          ss -ltnp 2>&1 | grep -E '(:15551|:5551)' || true
       - uses: actions/checkout@v4
         with:
           submodules: recursive
