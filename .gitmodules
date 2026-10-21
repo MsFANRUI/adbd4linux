@@ -1,0 +1,20 @@
+[submodule "adb"]
+	path = adb
+	url = https://android.googlesource.com/platform/packages/modules/adb
+	branch = master
+[submodule "deps/core"]
+	path = deps/core
+	url = https://android.googlesource.com/platform/system/core
+	branch = master
+[submodule "deps/libbase"]
+	path = deps/libbase
+	url = https://android.googlesource.com/platform/system/libbase
+	branch = master
+[submodule "deps/logging"]
+	path = deps/logging
+	url = https://android.googlesource.com/platform/system/logging
+	branch = master
+[submodule "deps/fmtlib"]
+	path = deps/fmtlib
+	url = https://android.googlesource.com/platform/external/fmtlib
+	branch = master

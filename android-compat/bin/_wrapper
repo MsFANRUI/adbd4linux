@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+name=$(basename "$0")
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+for base in \
+    "$dir/../lib/android-compat" \
+    "$dir/../lib" \
+    /usr/local/lib/android-compat \
+    /usr/lib/android-compat \
+    /usr/lib/*/android-compat; do
+    if [ -f "$base/$name.py" ]; then
+        exec /usr/bin/python3 "$base/$name.py" "$@"
+    fi
+done
+
+printf '%s\n' "android-compat: cannot find implementation for '$name'" >&2
+exit 127

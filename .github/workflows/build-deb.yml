@@ -1,0 +1,85 @@
+name: Build AOSP adbd Debian Packages
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }} package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: [self-hosted, rk3588]
+    runs-on: ${{ matrix.runner }}
+    # Untrusted fork code must not run on the organization's self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Check architecture and version
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(dpkg --print-architecture)" = "$EXPECTED_ARCH"
+          VERSION=$(dpkg-parsechangelog -S Version)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test "${GITHUB_REF#refs/tags/v}" = "$VERSION"
+          fi
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y build-essential debhelper cmake pkg-config patch \
+            libbrotli-dev liblz4-dev libzstd-dev python3
+      - name: Build Debian package
+        run: |
+          dpkg-buildpackage -us -uc -b -j2
+          mkdir -p output
+          cp ../adbd_"${VERSION}"_"${{ matrix.arch }}".deb output/
+      - name: Test packaged daemon
+        run: |
+          dpkg-deb -x output/*.deb build-package
+          python3 tests/smoke.py build-package/usr/bin/adbd
+          git submodule foreach --recursive 'git diff --exit-code && git diff --cached --exit-code'
+      - name: Test companion commands
+        env:
+          ANDROID_COMPAT_DISPLAY: ":65535"
+          ANDROID_COMPAT_WIDTH: "1280"
+          ANDROID_COMPAT_HEIGHT: "720"
+        run: |
+          multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          ln -sfn "$multiarch/android-compat" build-package/usr/lib/android-compat
+          test "$(build-package/usr/bin/getprop ro.product.model)" = "RoboPi2"
+          test "$(build-package/usr/bin/wm size)" = "Physical size: 1280x720"
+          build-package/usr/bin/settings --help >/dev/null
+          build-package/usr/bin/input --help >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adbd-${{ env.VERSION }}-${{ matrix.arch }}
+          path: output/*.deb
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: adbd-*
+          path: output
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: output/*.deb

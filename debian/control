@@ -1,0 +1,21 @@
+Source: adbd
+Section: devel
+Priority: optional
+Maintainer: RoboParty <2321901849@qq.com>
+Build-Depends: debhelper-compat (= 13), cmake (>= 3.22), pkg-config, patch,
+ libbrotli-dev, liblz4-dev, libzstd-dev
+Standards-Version: 4.6.0
+Rules-Requires-Root: no
+Homepage: https://android.googlesource.com/platform/packages/modules/adb
+Vcs-Git: https://github.com/Roboparty/adbd.git
+Vcs-Browser: https://github.com/Roboparty/adbd
+
+Package: adbd
+Architecture: linux-any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3, ffmpeg, x11-utils, libx11-6,
+ libxtst6, iproute2, procps, systemd
+Description: AOSP device-side Android Debug Bridge daemon for Linux
+ Standalone Linux port of the AOSP master adbd, supporting FunctionFS USB,
+ explicitly configured TCP/VSOCK, shell, file sync, and port forwarding.
+ Android framework authentication and TLS pairing are not included.
+ This daemon-only package does not include USB gadget setup or service units.

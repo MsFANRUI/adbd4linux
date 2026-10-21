@@ -1,0 +1,2 @@
+#pragma once
+#define PLATFORM_TOOLS_VERSION "AOSP-master-1cf2f017-Roboparty"

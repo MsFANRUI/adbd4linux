@@ -1,0 +1,1203 @@
+Description: Standalone Linux/glibc adbd from the pinned AOSP master sources
+ Supports FunctionFS, explicit TCP/VSOCK listeners, Linux shells and file sync.
+ Omits Android framework authentication, TLS pairing, JDWP and mDNS integration.
+ Includes GCC portability fixes for AOSP support libraries. Apply with -p1 at
+ the root of a source copy containing adb/ and deps/; see CMakeLists.txt.
+Author: RoboParty contributors
+Origin: Adapted from nmeum/android-tools and happyme531/standalone-linux-adbd
+ at bdb5cdc4b516b3bc71fd2b805bc36190041a9393; contributor attribution in NOTICE
+Forwarded: not-needed
+Last-Update: 2026-10-21
+
+diff --git a/adb/adb.cpp b/adb/adb.cpp
+index a2406761..385efc63 100644
+--- a/adb/adb.cpp
++++ b/adb/adb.cpp
+@@ -64,7 +64,9 @@
+ #include "transport.h"
+ 
+ #if !ADB_HOST
++#if defined(__ANDROID__)
+ #include <sys/capability.h>
++#endif
+ #include <sys/mount.h>
+ #include <android-base/properties.h>
+ using namespace std::chrono_literals;
+@@ -450,8 +452,12 @@ void handle_packet(apacket *p, atransport *t)
+ #if ADB_HOST
+         send_tls_request(t);
+         adb_auth_tls_handshake(t);
++#else
++#if ADB_STANDALONE_LINUX
++        kick_transport(t);
+ #else
+         adbd_auth_tls_handshake(t);
++#endif
+ #endif
+         break;
+ 
+diff --git a/adb/adb_auth.h b/adb/adb_auth.h
+index 38312211..eb28f4e1 100644
+--- a/adb/adb_auth.h
++++ b/adb/adb_auth.h
+@@ -22,7 +22,11 @@
+ #include <deque>
+ #include <memory>
+ 
++#if ADB_STANDALONE_LINUX
++typedef struct rsa_st RSA;
++#else
+ #include <openssl/rsa.h>
++#endif
+ 
+ /* AUTH packets first argument */
+ /* Request */
+@@ -62,9 +66,11 @@ void adbd_notify_framework_connected_key(atransport* t);
+ 
+ void send_auth_request(atransport *t);
+ 
++#if !ADB_STANDALONE_LINUX
+ void adbd_auth_tls_handshake(atransport* t);
+ int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key);
+ bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list();
++#endif
+ 
+ #endif // ADB_HOST
+ 
+diff --git a/adb/adb_mdns.h b/adb/adb_mdns.h
+index e2da4b51..56ad343a 100644
+--- a/adb/adb_mdns.h
++++ b/adb/adb_mdns.h
+@@ -21,6 +21,12 @@
+ #include <string>
+ #include <string_view>
+ 
++// Clang-only nullability specifiers
++#ifndef __clang__
++#define _Nonnull
++#define _Nullable
++#endif
++
+ // The rules for Service Names [RFC6335] state that they may be no more
+ // than fifteen characters long (not counting the mandatory underscore),
+ // consisting of only letters, digits, and hyphens, must begin and end
+diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
+index 931b1702..f27995e0 100644
+--- a/adb/daemon/main.cpp
++++ b/adb/daemon/main.cpp
+@@ -24,7 +24,9 @@
+ #include <signal.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#if defined(__ANDROID__)
+ #include <sys/capability.h>
++#endif
+ #include <sys/prctl.h>
+ 
+ #include <memory>
+@@ -258,8 +260,9 @@ int adbd_main() {
+ 
+     bool is_usb = false;
+ 
+-#if defined(__ANDROID__)
+-    if (access(USB_FFS_ADB_EP0, F_OK) == 0) {
++#if defined(__ANDROID__) || ADB_LINUX_USB
++    const char* usb_enabled = getenv("ADBD_USB");
++    if ((!usb_enabled || strcmp(usb_enabled, "0") != 0) && access(USB_FFS_ADB_EP0, F_OK) == 0) {
+         // Listen on USB.
+         usb_init();
+         is_usb = true;
+@@ -270,6 +273,22 @@ int adbd_main() {
+     // If one of the properties isn't set and we couldn't listen on usb, listen
+     // on the default port.
+     std::vector<std::string> addrs;
++#if ADB_STANDALONE_LINUX
++    // Network transports are explicit on Linux; absence of USB must not expose a shell.
++    const char* listen = getenv("ADBD_LISTEN");
++    const char* port = getenv("ADBD_PORT");
++    if (!port || !*port) port = getenv("ADB_TCP_PORT");
++    if (listen && *listen) {
++        addrs = android::base::Split(listen, ",");
++    } else if (port && *port) {
++        addrs.emplace_back(std::string("tcp:127.0.0.1:") + port);
++    }
++    if (!is_usb && addrs.empty()) {
++        LOG(ERROR) << "No FunctionFS endpoint; configure ADBD_LISTEN for network transport";
++        return 1;
++    }
++    setup_adb(addrs);
++#else
+     std::string prop_addr = android::base::GetProperty("service.adb.listen_addrs", "");
+     if (prop_addr.empty()) {
+         std::string prop_port = android::base::GetProperty("service.adb.tcp.port", "");
+@@ -281,6 +300,11 @@ int adbd_main() {
+         if (prop_port.empty() && getenv("ADBD_PORT")) {
+             prop_port = getenv("ADBD_PORT");
+         }
++        // Keep compatibility with the legacy Debian adbd launcher used by
++        // rktoolkit/usbdevice.service.
++        if (prop_port.empty() && getenv("ADB_TCP_PORT")) {
++            prop_port = getenv("ADB_TCP_PORT");
++        }
+ #endif
+ 
+         int port;
+@@ -302,6 +326,7 @@ int adbd_main() {
+         addrs = android::base::Split(prop_addr, ",");
+         setup_adb(addrs);
+     }
++#endif
+ 
+     LOG(INFO) << "adbd started";
+ 
+diff --git a/adb/daemon/shell_service.cpp b/adb/daemon/shell_service.cpp
+index 0b71b035..954c584b 100644
+--- a/adb/daemon/shell_service.cpp
++++ b/adb/daemon/shell_service.cpp
+@@ -254,6 +254,12 @@ bool Subprocess::ForkAndExec(std::string* error) {
+ 
+     // Construct the environment for the child before we fork.
+     passwd* pw = getpwuid(getuid());
++    const char* configured_shell = getenv("ADBD_SHELL");
++    std::string shell_path = _PATH_BSHELL;
++    if (configured_shell != nullptr && configured_shell[0] != '\0') {
++        shell_path = configured_shell;
++    }
++    std::string login_shell = "-" + shell_path;
+     std::unordered_map<std::string, std::string> env;
+     if (environ) {
+         char** current = environ;
+@@ -273,8 +279,12 @@ bool Subprocess::ForkAndExec(std::string* error) {
+         env["HOME"] = pw->pw_dir;
+         env["HOSTNAME"] = GetHostName();
+         env["LOGNAME"] = pw->pw_name;
+-        env["SHELL"] = pw->pw_shell;
++        env["SHELL"] = shell_path;
++#if ADB_STANDALONE_LINUX
++        if (!env.contains("TMPDIR")) env["TMPDIR"] = "/tmp";
++#else
+         env["TMPDIR"] = "/data/local/tmp";
++#endif
+         env["USER"] = pw->pw_name;
+     }
+ 
+@@ -388,11 +398,13 @@ bool Subprocess::ForkAndExec(std::string* error) {
+ 
+         if (command_.empty()) {
+             // Spawn a login shell if we don't have a command.
+-            execle(_PATH_BSHELL, "-" _PATH_BSHELL, nullptr, cenv.data());
++            execle(shell_path.c_str(), login_shell.c_str(), nullptr, cenv.data());
+         } else {
+-            execle(_PATH_BSHELL, _PATH_BSHELL, "-c", command_.c_str(), nullptr, cenv.data());
++            execle(shell_path.c_str(), shell_path.c_str(), "-c", command_.c_str(), nullptr,
++                   cenv.data());
+         }
+-        WriteFdExactly(child_error_sfd, "exec '" _PATH_BSHELL "' failed: ");
++        WriteFdExactly(child_error_sfd,
++                       android::base::StringPrintf("exec '%s' failed: ", shell_path.c_str()));
+         WriteFdExactly(child_error_sfd, strerror(errno));
+         child_error_sfd.reset(-1);
+         _Exit(1);
+diff --git a/adb/daemon/usb.cpp b/adb/daemon/usb.cpp
+index f4429610..20bc6c0a 100644
+--- a/adb/daemon/usb.cpp
++++ b/adb/daemon/usb.cpp
+@@ -42,14 +42,19 @@
+ 
+ #include <android-base/logging.h>
+ #include <android-base/macros.h>
++#include <android-base/thread_annotations.h>
++
++#if defined(__ANDROID__)
+ #include <android-base/parsebool.h>
+ #include <android-base/properties.h>
+-#include <android-base/thread_annotations.h>
++#endif
+ 
+ #include "adb_unique_fd.h"
+ #include "adb_utils.h"
+ #include "apacket_reader.h"
++#if defined(__ANDROID__)
+ #include "daemon/property_monitor.h"
++#endif
+ #include "daemon/usb_ffs.h"
+ #include "sysdeps/chrono.h"
+ #include "transfer_id.h"
+@@ -725,6 +730,7 @@ struct UsbFfsConnection : public Connection {
+ static void usb_ffs_open_thread() {
+     adb_thread_setname("usb ffs open");
+ 
++#if defined(__ANDROID__)
+     // When the device is acting as a USB host, we'll be unable to bind to the USB gadget on kernels
+     // that don't carry a downstream patch to enable that behavior.
+     //
+@@ -738,6 +744,7 @@ static void usb_ffs_open_thread() {
+         // Return false (i.e. break out of PropertyMonitor::Run) when the property != 1.
+         return android::base::ParseBool(value) == android::base::ParseBoolResult::kTrue;
+     });
++#endif
+ 
+     while (true) {
+         unique_fd control;
+@@ -748,11 +755,13 @@ static void usb_ffs_open_thread() {
+             continue;
+         }
+ 
++#if defined(__ANDROID__)
+         if (android::base::GetBoolProperty(kPropertyUsbDisabled, false)) {
+             VLOG(USB) << "pausing USB due to " << kPropertyUsbDisabled;
+             prop_mon.Run();
+             VLOG(USB) << "resuming USB";
+         }
++#endif
+ 
+         atransport* transport = new atransport(kTransportUsb);
+         transport->serial = "UsbFfs";
+diff --git a/adb/daemon/usb_ffs.cpp b/adb/daemon/usb_ffs.cpp
+index e538ca88..22faf092 100644
+--- a/adb/daemon/usb_ffs.cpp
++++ b/adb/daemon/usb_ffs.cpp
+@@ -24,9 +24,12 @@
+ #include <linux/usb/functionfs.h>
+ 
+ #include <android-base/logging.h>
+-#include <android-base/properties.h>
+ #include <android-base/unique_fd.h>
+ 
++#if defined(__ANDROID__)
++#include <android-base/properties.h>
++#endif
++
+ #include "adb.h"
+ 
+ #define MAX_PACKET_SIZE_FS 64
+@@ -210,22 +213,27 @@ struct usb_ext_compat_desc os_desc_compat = {
+     .Reserved2 = {0},
+ };
+ 
+-static struct usb_os_desc_header os_desc_header = {
+-    .interface = cpu_to_le32(0),
+-    .dwLength = cpu_to_le32(sizeof(os_desc_header) + sizeof(os_desc_compat)),
+-    .bcdVersion = cpu_to_le32(1),
+-    .wIndex = cpu_to_le32(4),
+-    .bCount = cpu_to_le32(1),
+-    .Reserved = cpu_to_le32(0),
+-};
++static struct usb_os_desc_header make_os_desc_header(uint32_t length, uint16_t index,
++                                                     uint16_t count) {
++    struct usb_os_desc_header header = {};
++    header.interface = 0;
++    header.dwLength = cpu_to_le32(length);
++    header.bcdVersion = cpu_to_le16(1);
++    header.wIndex = cpu_to_le16(index);
++    if (index == 4) {
++        header.bCount = static_cast<uint8_t>(count);
++        header.Reserved = 0;
++    } else {
++        header.wCount = cpu_to_le16(count);
++    }
++    return header;
++}
+ 
+-static struct usb_os_desc_header os_prop_header = {
+-    .interface = cpu_to_le32(0),
+-    .dwLength = cpu_to_le32(sizeof(os_desc_header) + sizeof(os_prop_values)),
+-    .bcdVersion = cpu_to_le32(1),
+-    .wIndex = cpu_to_le32(5),
+-    .wCount = cpu_to_le16(1),
+-};
++static struct usb_os_desc_header os_desc_header = make_os_desc_header(
++        sizeof(struct usb_os_desc_header) + sizeof(os_desc_compat), 4, 1);
++
++static struct usb_os_desc_header os_prop_header = make_os_desc_header(
++        sizeof(struct usb_os_desc_header) + sizeof(os_prop_values), 5, 1);
+ 
+ #define STR_INTERFACE_ "ADB Interface"
+ 
+@@ -299,7 +307,9 @@ bool open_functionfs(android::base::unique_fd* out_control, android::base::uniqu
+             return false;
+         }
+         // Signal only when writing the descriptors to ffs
++#if defined(__ANDROID__)
+         android::base::SetProperty("sys.usb.ffs.ready", "1");
++#endif
+     }
+ 
+     bulk_out.reset(adb_open(USB_FFS_ADB_OUT, O_RDONLY));
+diff --git a/adb/socket_spec.cpp b/adb/socket_spec.cpp
+index 5f0cb3f0..54cadf68 100644
+--- a/adb/socket_spec.cpp
++++ b/adb/socket_spec.cpp
+@@ -66,6 +66,8 @@ struct LocalSocketType {
+ static auto& kLocalSocketTypes = *new std::unordered_map<std::string, LocalSocketType>({
+ #if ADB_HOST
+     { "local", { ANDROID_SOCKET_NAMESPACE_FILESYSTEM, !ADB_WINDOWS } },
++#elif defined(ADB_STANDALONE_LINUX)
++    { "local", { ANDROID_SOCKET_NAMESPACE_ABSTRACT, ADB_LINUX } },
+ #else
+     { "local", { ANDROID_SOCKET_NAMESPACE_RESERVED, !ADB_WINDOWS } },
+ #endif
+@@ -154,7 +156,7 @@ int get_host_socket_spec_port(std::string_view spec, std::string* error) {
+ 
+ static bool tcp_host_is_local(std::string_view hostname) {
+     // FIXME
+-    return hostname.empty() || hostname == "localhost";
++    return hostname.empty() || hostname == "localhost" || hostname == "127.0.0.1";
+ }
+ 
+ bool is_socket_spec(std::string_view spec) {
+diff --git a/adb/sysdeps.h b/adb/sysdeps.h
+index e973e0ef..fd0d4a9b 100644
+--- a/adb/sysdeps.h
++++ b/adb/sysdeps.h
+@@ -62,6 +62,12 @@ static inline void* mempcpy(void* dst, const void* src, size_t n) {
+ 
+ std::optional<ssize_t> network_peek(borrowed_fd fd);
+ 
++// Clang-only nullability specifiers
++#ifndef __clang__
++#define _Nonnull
++#define _Nullable
++#endif
++
+ #ifdef _WIN32
+ 
+ #include <ctype.h>
+@@ -556,8 +562,10 @@ static inline int adb_pwrite(int fd, const void* buf, size_t len, off64_t offset
+ #endif
+ }
+ 
++#ifdef write
+ #undef   write
+ #define  write  ___xxx_write
++#endif
+ #undef pwrite
+ #define pwrite ___xxx_pwrite
+ 
+@@ -757,7 +765,7 @@ static inline int cast_handle_to_int(int fd) {
+ class Process {
+   public:
+     constexpr explicit Process(pid_t pid) : pid_(pid) {}
+-    constexpr Process(Process&& other) : pid_(std::exchange(other.pid_, -1)) {}
++    Process(Process&& other) : pid_(std::exchange(other.pid_, -1)) {}
+ 
+     constexpr explicit operator bool() const { return pid_ >= 0; }
+ 
+diff --git a/adb/sysdeps/uio.h b/adb/sysdeps/uio.h
+index f3ace642..266a20bd 100644
+--- a/adb/sysdeps/uio.h
++++ b/adb/sysdeps/uio.h
+@@ -34,6 +34,7 @@ ssize_t adb_writev(borrowed_fd fd, const adb_iovec* iov, int iovcnt);
+ 
+ #else
+ 
++#include <limits.h>
+ #include <sys/uio.h>
+ using adb_iovec = struct iovec;
+ inline ssize_t adb_writev(borrowed_fd fd, const adb_iovec* iov, int iovcnt) {
+diff --git a/adb/transport.cpp b/adb/transport.cpp
+index 3c27f0dd..7a7b000a 100644
+--- a/adb/transport.cpp
++++ b/adb/transport.cpp
+@@ -36,9 +36,11 @@
+ #include <string>
+ #include <thread>
+ 
++#if !ADB_STANDALONE_LINUX
+ #include <adb/crypto/rsa_2048_key.h>
+ #include <adb/crypto/x509_generator.h>
+ #include <adb/tls/tls_connection.h>
++#endif
+ #include <android-base/logging.h>
+ #include <android-base/no_destructor.h>
+ #include <android-base/parsenetaddress.h>
+@@ -62,11 +64,13 @@
+ #include "client/usb.h"
+ #endif
+ 
++#if !ADB_STANDALONE_LINUX
+ using namespace adb::crypto;
+ using namespace adb::tls;
++using TlsError = TlsConnection::TlsError;
++#endif
+ using namespace std::string_literals;
+ using android::base::ScopedLockAssertion;
+-using TlsError = TlsConnection::TlsError;
+ 
+ static void remove_transport(atransport* transport);
+ static void transport_destroy(atransport* transport);
+@@ -450,6 +454,7 @@ FdConnection::FdConnection(unique_fd fd) : fd_(std::move(fd)) {}
+ FdConnection::~FdConnection() {}
+ 
+ bool FdConnection::DispatchRead(void* buf, size_t len) {
++#if !ADB_STANDALONE_LINUX
+     if (tls_ != nullptr) {
+         // The TlsConnection doesn't allow 0 byte reads
+         if (len == 0) {
+@@ -457,11 +462,13 @@ bool FdConnection::DispatchRead(void* buf, size_t len) {
+         }
+         return tls_->ReadFully(buf, len);
+     }
++#endif
+ 
+     return ReadFdExactly(fd_.get(), buf, len);
+ }
+ 
+ bool FdConnection::DispatchWrite(void* buf, size_t len) {
++#if !ADB_STANDALONE_LINUX
+     if (tls_ != nullptr) {
+         // The TlsConnection doesn't allow 0 byte writes
+         if (len == 0) {
+@@ -469,6 +476,7 @@ bool FdConnection::DispatchWrite(void* buf, size_t len) {
+         }
+         return tls_->WriteFully(std::string_view(reinterpret_cast<const char*>(buf), len));
+     }
++#endif
+ 
+     return WriteFdExactly(fd_.get(), buf, len);
+ }
+@@ -511,6 +519,11 @@ bool FdConnection::Write(apacket* packet) {
+ }
+ 
+ bool FdConnection::DoTlsHandshake(RSA* key, std::string* auth_key) {
++#if ADB_STANDALONE_LINUX
++    (void)key;
++    (void)auth_key;
++    return false;
++#else
+     bssl::UniquePtr<EVP_PKEY> evp_pkey(EVP_PKEY_new());
+     if (!EVP_PKEY_set1_RSA(evp_pkey.get(), key)) {
+         LOG(ERROR) << "EVP_PKEY_set1_RSA failed";
+@@ -554,6 +567,7 @@ bool FdConnection::DoTlsHandshake(RSA* key, std::string* auth_key) {
+ 
+     tls_.reset();
+     return false;
++#endif
+ }
+ 
+ void FdConnection::Close() {
+@@ -1204,26 +1218,28 @@ const FeatureSet& supported_features() {
+         // clang-format off
+         FeatureSet result {
+             kFeatureShell2,
+-            kFeatureCmd,
+             kFeatureStat2,
+             kFeatureLs2,
+             kFeatureFixedPushMkdir,
+-            kFeatureApex,
+-            kFeatureAbb,
+             kFeatureFixedPushSymlinkTimestamp,
+-            kFeatureAbbExec,
+-            kFeatureRemountShell,
+-            kFeatureTrackApp,
+             kFeatureSendRecv2,
+             kFeatureSendRecv2Brotli,
+             kFeatureSendRecv2LZ4,
+             kFeatureSendRecv2Zstd,
+             kFeatureSendRecv2DryRunSend,
++            kFeatureDevRaw,
++#if !ADB_STANDALONE_LINUX
++            kFeatureCmd,
++            kFeatureApex,
++            kFeatureAbb,
++            kFeatureAbbExec,
++            kFeatureRemountShell,
++            kFeatureTrackApp,
+             kFeatureOpenscreenMdns,
+             kFeatureDeviceTrackerProtoFormat,
+-            kFeatureDevRaw,
+             kFeatureAppInfo,
+             kFeatureServerStatus,
++#endif
+         };
+         // clang-format on
+ 
+diff --git a/adb/transport.h b/adb/transport.h
+index ed22da7b..a0616808 100644
+--- a/adb/transport.h
++++ b/adb/transport.h
+@@ -36,7 +36,11 @@
+ 
+ #include <android-base/macros.h>
+ #include <android-base/thread_annotations.h>
++#if ADB_STANDALONE_LINUX
++typedef struct rsa_st RSA;
++#else
+ #include <openssl/rsa.h>
++#endif
+ 
+ #include "adb.h"
+ #include "adb_unique_fd.h"
+@@ -216,7 +220,9 @@ struct FdConnection : public BlockingConnection {
+     bool DispatchWrite(void* buf, size_t len);
+ 
+     unique_fd fd_;
++#if !ADB_STANDALONE_LINUX
+     std::unique_ptr<adb::tls::TlsConnection> tls_;
++#endif
+ };
+ 
+ // Waits for a transport's connection to be not pending. This is a separate
+diff --git a/adb/types.h b/adb/types.h
+index 6b8bbfdd..13c6f8aa 100644
+--- a/adb/types.h
++++ b/adb/types.h
+@@ -255,7 +255,6 @@ struct IOVector {
+ 
+         size_t offset = 0;
+         iterate_blocks([&offset, &result](const char* data, size_t len) {
+-            static_assert(std::is_standard_layout<decltype(result)>());
+             memcpy(&result[offset], data, len);
+             offset += len;
+         });
+@@ -372,13 +371,13 @@ struct enable_weak_from_this {
+         }
+     }
+ 
+-    weak_ptr<T> weak() { return weak_ptr<T>(static_cast<T*>(this)); }
++    ::weak_ptr<T> weak() { return ::weak_ptr<T>(static_cast<T*>(this)); }
+ 
+     void schedule_deletion() {
+         fdevent_run_on_looper([this]() { delete static_cast<T*>(this); });
+     }
+ 
+   private:
+-    friend struct weak_ptr<T>;
+-    std::vector<weak_ptr<T>*> weak_ptrs_;
++    friend struct ::weak_ptr<T>;
++    std::vector<::weak_ptr<T>*> weak_ptrs_;
+ };
+diff --git a/deps/core/libasyncio/include/asyncio/AsyncIO.h b/deps/core/libasyncio/include/asyncio/AsyncIO.h
+index 9620d2a..005fc66 100644
+--- a/deps/core/libasyncio/include/asyncio/AsyncIO.h
++++ b/deps/core/libasyncio/include/asyncio/AsyncIO.h
+@@ -20,7 +20,6 @@
+ #include <linux/aio_abi.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+-#include <sys/cdefs.h>
+ #include <sys/types.h>
+ #include <time.h>
+ #include <unistd.h>
+diff --git a/deps/core/libcutils/android_get_control_env.h b/deps/core/libcutils/android_get_control_env.h
+index a830269..40edc2d 100644
+--- a/deps/core/libcutils/android_get_control_env.h
++++ b/deps/core/libcutils/android_get_control_env.h
+@@ -16,11 +16,14 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ int __android_get_control_from_env(const char* prefix, const char* name)
+         __attribute__((visibility("hidden")));
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/deps/core/libcutils/include/cutils/android_reboot.h b/deps/core/libcutils/include/cutils/android_reboot.h
+index 24e32d5..56a31bc 100644
+--- a/deps/core/libcutils/include/cutils/android_reboot.h
++++ b/deps/core/libcutils/include/cutils/android_reboot.h
+@@ -16,9 +16,10 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ /* Commands */
+ #define ANDROID_RB_RESTART 0xDEAD0001 /* deprecated. Use RESTART2. */
+@@ -40,4 +41,6 @@ __BEGIN_DECLS
+  */
+ int android_reboot(unsigned cmd, int flags, const char* arg);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/deps/core/libcutils/include/cutils/atomic.h b/deps/core/libcutils/include/cutils/atomic.h
+index 0c88bfe..6f8df41 100644
+--- a/deps/core/libcutils/include/cutils/atomic.h
++++ b/deps/core/libcutils/include/cutils/atomic.h
+@@ -19,7 +19,12 @@
+ 
+ #include <stdint.h>
+ #include <sys/types.h>
++#ifdef __cplusplus
++#include <atomic>
++using namespace std;
++#else
+ #include <stdatomic.h>
++#endif
+ 
+ #ifndef ANDROID_ATOMIC_INLINE
+ #define ANDROID_ATOMIC_INLINE static inline
+diff --git a/deps/core/libcutils/include/cutils/bitops.h b/deps/core/libcutils/include/cutils/bitops.h
+index 38d2840..79193b5 100644
+--- a/deps/core/libcutils/include/cutils/bitops.h
++++ b/deps/core/libcutils/include/cutils/bitops.h
+@@ -20,9 +20,10 @@
+ #include <stdbool.h>
+ #include <string.h>
+ #include <strings.h>
+-#include <sys/cdefs.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ static inline int popcount(unsigned int x) {
+     return __builtin_popcount(x);
+@@ -36,6 +37,8 @@ static inline int popcountll(unsigned long long x) {
+     return __builtin_popcountll(x);
+ }
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+ 
+ #endif /* __CUTILS_BITOPS_H */
+diff --git a/deps/core/libcutils/include/cutils/klog.h b/deps/core/libcutils/include/cutils/klog.h
+index 5ae6216..8006be7 100644
+--- a/deps/core/libcutils/include/cutils/klog.h
++++ b/deps/core/libcutils/include/cutils/klog.h
+@@ -17,11 +17,12 @@
+ #ifndef _CUTILS_KLOG_H_
+ #define _CUTILS_KLOG_H_
+ 
+-#include <sys/cdefs.h>
+ #include <sys/uio.h>
+ #include <stdarg.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ void klog_set_level(int level);
+ 
+@@ -29,7 +30,9 @@ void klog_write(int level, const char *fmt, ...)
+     __attribute__ ((format(printf, 2, 3)));
+ void klog_writev(int level, const struct iovec* iov, int iov_count);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+ 
+ #define KLOG_ERROR_LEVEL   3
+ #define KLOG_WARNING_LEVEL 4
+diff --git a/deps/core/libcutils/include/cutils/partition_utils.h b/deps/core/libcutils/include/cutils/partition_utils.h
+index 8bc9b48..ff1d13a 100644
+--- a/deps/core/libcutils/include/cutils/partition_utils.h
++++ b/deps/core/libcutils/include/cutils/partition_utils.h
+@@ -17,12 +17,15 @@
+ #ifndef __CUTILS_PARTITION_WIPED_H__
+ #define __CUTILS_PARTITION_WIPED_H__
+ 
+-#include <sys/cdefs.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ int partition_wiped(const char* source);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+ 
+ #endif /* __CUTILS_PARTITION_WIPED_H__ */
+diff --git a/deps/core/libcutils/include/cutils/properties.h b/deps/core/libcutils/include/cutils/properties.h
+index 78d8bc6..9f87212 100644
+--- a/deps/core/libcutils/include/cutils/properties.h
++++ b/deps/core/libcutils/include/cutils/properties.h
+@@ -16,7 +16,6 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+diff --git a/deps/core/libcutils/include/cutils/str_parms.h b/deps/core/libcutils/include/cutils/str_parms.h
+index aa1435a..160792a 100644
+--- a/deps/core/libcutils/include/cutils/str_parms.h
++++ b/deps/core/libcutils/include/cutils/str_parms.h
+@@ -18,9 +18,10 @@
+ #define __CUTILS_STR_PARMS_H
+ 
+ #include <stdint.h>
+-#include <sys/cdefs.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ struct str_parms;
+ 
+@@ -55,6 +56,8 @@ char *str_parms_to_str(struct str_parms *str_parms);
+ /* debug */
+ void str_parms_dump(struct str_parms *str_parms);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+ 
+ #endif /* __CUTILS_STR_PARMS_H */
+diff --git a/deps/core/libcutils/include/cutils/trace.h b/deps/core/libcutils/include/cutils/trace.h
+index 7f57637..83f407c 100644
+--- a/deps/core/libcutils/include/cutils/trace.h
++++ b/deps/core/libcutils/include/cutils/trace.h
+@@ -18,16 +18,22 @@
+ #define _LIBS_CUTILS_TRACE_H
+ 
+ #include <inttypes.h>
++#ifdef __cplusplus
++#include <atomic>
++using namespace std;
++#else
+ #include <stdatomic.h>
++#endif
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
+-#include <sys/cdefs.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+ #include <cutils/compiler.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ /**
+  * The ATRACE_TAG macro can be defined before including this header to trace
+@@ -320,6 +326,8 @@ static inline void atrace_int64(uint64_t tag, const char* name, int64_t value)
+     }
+ }
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+ 
+ #endif // _LIBS_CUTILS_TRACE_H
+diff --git a/deps/core/libcutils/include/private/canned_fs_config.h b/deps/core/libcutils/include/private/canned_fs_config.h
+index ad4de4c..caf4b61 100644
+--- a/deps/core/libcutils/include/private/canned_fs_config.h
++++ b/deps/core/libcutils/include/private/canned_fs_config.h
+@@ -17,12 +17,15 @@
+ #pragma once
+ 
+ #include <inttypes.h>
+-#include <sys/cdefs.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ int load_canned_fs_config(const char* fn);
+ void canned_fs_config(const char* path, int dir, const char* target_out_path, unsigned* uid,
+                       unsigned* gid, unsigned* mode, uint64_t* capabilities);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/deps/core/libcutils/include/private/fs_config.h b/deps/core/libcutils/include/private/fs_config.h
+index 9a727bc..1b96e2d 100644
+--- a/deps/core/libcutils/include/private/fs_config.h
++++ b/deps/core/libcutils/include/private/fs_config.h
+@@ -24,14 +24,15 @@
+ #include <fcntl.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+-#include <sys/cdefs.h>
+ #include <unistd.h>
+ 
+ #include <linux/capability.h>
+ 
+ /* Rules for directories and files has moved to system/code/libcutils/fs_config.c */
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ /* This API is deprecated. New users should call get_fs_config. */
+ void fs_config(const char* path, int dir, const char* target_out_path, unsigned* uid, unsigned* gid,
+@@ -56,4 +57,6 @@ struct fs_config {
+ bool get_fs_config(const char* path, bool dir, const char* target_out_path,
+                    struct fs_config* conf);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/deps/libbase/hex.cpp b/deps/libbase/hex.cpp
+index 60dc31a..d649626 100644
+--- a/deps/libbase/hex.cpp
++++ b/deps/libbase/hex.cpp
+@@ -18,6 +18,8 @@
+ 
+ #include "android-base/logging.h"
+ 
++#include <cstdint>
++
+ namespace android {
+ namespace base {
+ 
+diff --git a/deps/libbase/include/android-base/endian.h b/deps/libbase/include/android-base/endian.h
+index b47494b..65a60b9 100644
+--- a/deps/libbase/include/android-base/endian.h
++++ b/deps/libbase/include/android-base/endian.h
+@@ -19,13 +19,13 @@
+ /* A cross-platform equivalent of bionic's <sys/endian.h>. */
+ 
+ /* For __BIONIC__ and __GLIBC__ */
+-#include <sys/cdefs.h>
++#include <cfloat>
+ 
+ #if defined(__BIONIC__)
+ 
+ #include <sys/endian.h>
+ 
+-#elif defined(__GLIBC__) || defined(ANDROID_HOST_MUSL)
++#elif defined(__GLIBC__) || defined(ANDROID_HOST_MUSL) || defined(__linux__)
+ 
+ /* glibc and musl's <endian.h> are like bionic's <sys/endian.h>. */
+ #include <endian.h>
+diff --git a/deps/libbase/include/android-base/logging.h b/deps/libbase/include/android-base/logging.h
+index 42b2538..b6bce2f 100644
+--- a/deps/libbase/include/android-base/logging.h
++++ b/deps/libbase/include/android-base/logging.h
+@@ -492,6 +492,7 @@ namespace std {  // NOLINT(cert-dcl58-cpp)
+ // Note: to print the pointer, use "<< static_cast<const void*>(string_pointer)" instead.
+ // Note: a not-recommended alternative is to let Clang ignore the warning by adding
+ //       -Wno-user-defined-warnings to CPPFLAGS.
++#ifdef __clang__
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wgcc-compat"
+ #define OSTREAM_STRING_POINTER_USAGE_WARNING \
+@@ -501,5 +502,6 @@ std::ostream& operator<<(std::ostream& stream, const std::string* string_pointer
+   return stream << static_cast<const void*>(string_pointer);
+ }
+ #pragma clang diagnostic pop
++#endif /* defined(__clang__) */
+ 
+ }  // namespace std
+diff --git a/deps/libbase/include/android-base/properties.h b/deps/libbase/include/android-base/properties.h
+index 067fbf4..33fbc49 100644
+--- a/deps/libbase/include/android-base/properties.h
++++ b/deps/libbase/include/android-base/properties.h
+@@ -16,7 +16,6 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+ 
+ #include <chrono>
+ #include <limits>
+diff --git a/deps/libbase/include/android-base/thread_annotations.h b/deps/libbase/include/android-base/thread_annotations.h
+index 53fe6da..bc62f80 100644
+--- a/deps/libbase/include/android-base/thread_annotations.h
++++ b/deps/libbase/include/android-base/thread_annotations.h
+@@ -18,7 +18,11 @@
+ 
+ #include <mutex>
+ 
++#ifdef __clang__
+ #define THREAD_ANNOTATION_ATTRIBUTE__(x) __attribute__((x))
++#else
++#define THREAD_ANNOTATION_ATTRIBUTE__(x)
++#endif
+ 
+ #define CAPABILITY(x) \
+       THREAD_ANNOTATION_ATTRIBUTE__(capability(x))
+diff --git a/deps/libbase/logging.cpp b/deps/libbase/logging.cpp
+index 6ba8ea7..0c12f9a 100644
+--- a/deps/libbase/logging.cpp
++++ b/deps/libbase/logging.cpp
+@@ -215,7 +215,7 @@ static std::recursive_mutex& TagLock() {
+ static std::string* gDefaultTag;
+ 
+ void SetDefaultTag(const std::string& tag) {
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     __android_log_set_default_tag(tag.c_str());
+   } else {
+     std::lock_guard<std::recursive_mutex> lock(TagLock());
+@@ -323,7 +323,7 @@ static void LogdLogChunk(LogId id, LogSeverity severity, const char* tag, const
+   int32_t lg_id = LogIdTolog_id_t(id);
+   int32_t priority = LogSeverityToPriority(severity);
+ 
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     __android_log_message log_message = {sizeof(__android_log_message),     lg_id, priority, tag,
+                                          static_cast<const char*>(nullptr), 0,     message};
+     __android_log_logd_logger(&log_message);
+@@ -405,7 +405,7 @@ LogFunction SetLogger(LogFunction&& logger) {
+   LogFunction old_logger = std::move(Logger());
+   Logger() = std::move(logger);
+ 
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     __android_log_set_logger([](const struct __android_log_message* log_message) {
+       auto log_id = log_id_tToLogId(log_message->buffer_id);
+       auto severity = PriorityToLogSeverity(log_message->priority);
+@@ -421,7 +421,7 @@ AbortFunction SetAborter(AbortFunction&& aborter) {
+   AbortFunction old_aborter = std::move(Aborter());
+   Aborter() = std::move(aborter);
+ 
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     __android_log_set_aborter([](const char* abort_message) { Aborter()(abort_message); });
+   }
+   return old_aborter;
+@@ -509,7 +509,7 @@ LogMessage::~LogMessage() {
+ 
+   // Abort if necessary.
+   if (data_->GetSeverity() == FATAL) {
+-    if (__builtin_available(android 30, *)) {
++    if (false) {
+       __android_log_call_aborter(msg.c_str());
+     } else {
+       Aborter()(msg.c_str());
+@@ -524,7 +524,7 @@ std::ostream& LogMessage::stream() {
+ void LogMessage::LogLine(const char* file, unsigned int line, LogSeverity severity, const char* tag,
+                          const char* message) {
+   int32_t priority = LogSeverityToPriority(severity);
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     __android_log_message log_message = {
+         sizeof(__android_log_message), LOG_ID_DEFAULT, priority, tag, file, line, message};
+     __android_log_write_log_message(&log_message);
+@@ -543,7 +543,7 @@ void LogMessage::LogLine(const char* file, unsigned int line, LogSeverity severi
+ }
+ 
+ LogSeverity GetMinimumLogSeverity() {
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     return PriorityToLogSeverity(__android_log_get_minimum_priority());
+   } else {
+     return gMinimumLogSeverity;
+@@ -554,7 +554,7 @@ bool ShouldLog(LogSeverity severity, const char* tag) {
+   // Even though we're not using the R liblog functions in this function, if we're running on Q,
+   // we need to fall back to using gMinimumLogSeverity, since __android_log_is_loggable() will not
+   // take into consideration the value from SetMinimumLogSeverity().
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     int32_t priority = LogSeverityToPriority(severity);
+     return __android_log_is_loggable(priority, tag, ANDROID_LOG_INFO);
+   } else {
+@@ -563,7 +563,7 @@ bool ShouldLog(LogSeverity severity, const char* tag) {
+ }
+ 
+ LogSeverity SetMinimumLogSeverity(LogSeverity new_severity) {
+-  if (__builtin_available(android 30, *)) {
++  if (false) {
+     int32_t priority = LogSeverityToPriority(new_severity);
+     return PriorityToLogSeverity(__android_log_set_minimum_priority(priority));
+   } else {
+diff --git a/deps/logging/liblog/include/android/log.h b/deps/logging/liblog/include/android/log.h
+index 2df7fc1..f899b30 100644
+--- a/deps/logging/liblog/include/android/log.h
++++ b/deps/logging/liblog/include/android/log.h
+@@ -58,7 +58,6 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
+-#include <sys/cdefs.h>
+ #include <sys/time.h>
+ 
+ #if !defined(__BIONIC__) && !defined(__INTRODUCED_IN)
+diff --git a/deps/logging/liblog/include/android/log_macros.h b/deps/logging/liblog/include/android/log_macros.h
+index 829b943..936ffa7 100644
+--- a/deps/logging/liblog/include/android/log_macros.h
++++ b/deps/logging/liblog/include/android/log_macros.h
+@@ -16,11 +16,11 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+-
+ #include <android/log.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ /*
+  * #define LOG_TAG before including this header to control the log tag used by
+@@ -41,4 +41,6 @@ __BEGIN_DECLS
+ #define ALOGV(fmt, ...) \
+   ((void)__android_log_print(ANDROID_LOG_VERBOSE, (LOG_TAG), (fmt)__VA_OPT__(, ) __VA_ARGS__))
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/deps/logging/liblog/include/log/log_main.h b/deps/logging/liblog/include/log/log_main.h
+index 0cb7dd7..30fb3c6 100644
+--- a/deps/logging/liblog/include/log/log_main.h
++++ b/deps/logging/liblog/include/log/log_main.h
+@@ -17,12 +17,13 @@
+ #pragma once
+ 
+ #include <stdbool.h>
+-#include <sys/cdefs.h>
+ #include <sys/types.h>
+ 
+ #include <android/log.h>
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ /*
+  * Normally we strip the effects of ALOGV (VERBOSE messages),
+@@ -366,4 +367,6 @@ extern int __fake_use_va_args(int, ...);
+ #pragma clang diagnostic pop
+ #endif
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/deps/logging/liblog/logd_reader.h b/deps/logging/liblog/logd_reader.h
+index 68eef02..64e400f 100644
+--- a/deps/logging/liblog/logd_reader.h
++++ b/deps/logging/liblog/logd_reader.h
+@@ -16,16 +16,19 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+ #include <unistd.h>
+ 
+ #include "log/log_read.h"
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ int LogdRead(struct logger_list* logger_list, struct log_msg* log_msg);
+ void LogdClose(struct logger_list* logger_list);
+ 
+ ssize_t SendLogdControlMessage(char* buf, size_t buf_size);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/deps/logging/liblog/logger.h b/deps/logging/liblog/logger.h
+index ddff19d..ae8d257 100644
+--- a/deps/logging/liblog/logger.h
++++ b/deps/logging/liblog/logger.h
+@@ -16,8 +16,8 @@
+ 
+ #pragma once
+ 
+-#include <stdatomic.h>
+-#include <sys/cdefs.h>
++#include <atomic>
++using std::atomic_int;
+ 
+ #include <log/log.h>
+ 
+diff --git a/deps/logging/liblog/pmsg_reader.h b/deps/logging/liblog/pmsg_reader.h
+index b784f9f..88aeec9 100644
+--- a/deps/logging/liblog/pmsg_reader.h
++++ b/deps/logging/liblog/pmsg_reader.h
+@@ -16,14 +16,17 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+ #include <unistd.h>
+ 
+ #include "log/log_read.h"
+ 
+-__BEGIN_DECLS
++#ifdef __cplusplus
++extern "C" {
++#endif
+ 
+ int PmsgRead(struct logger_list* logger_list, struct log_msg* log_msg);
+ void PmsgClose(struct logger_list* logger_list);
+ 
+-__END_DECLS
++#ifdef __cplusplus
++}
++#endif
+diff --git a/adb/daemon/linux_stubs.cpp b/adb/daemon/linux_stubs.cpp
+new file mode 100644
+index 0000000..a101eea
+--- /dev/null
++++ b/adb/daemon/linux_stubs.cpp
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: Apache-2.0
++// Linux integration derived from happyme531/standalone-linux-adbd (hallo1).
++#include "adb.h"
++#include "adb_auth.h"
++#include "adb_unique_fd.h"
++#include "transport.h"
++#include "daemon/jdwp_service.h"
++#include "daemon/tradeinmode.h"
++#include <adbd_fs.h>
++#include <diagnose_usb.h>
++
++// Android framework authorization is unavailable in this standalone target.
++bool auth_required = false;
++bool socket_access_allowed = true;
++void adbd_auth_init() {}
++void adbd_cloexec_auth_socket() {}
++void adbd_auth_verified(atransport* transport) {
++    handle_online(transport);
++    send_connect(transport);
++}
++bool adbd_auth_verify(const char*, size_t, const std::string&, std::string*) {
++    return false;
++}
++void adbd_auth_confirm_key(atransport* transport) { kick_transport(transport); }
++void adbd_notify_framework_connected_key(atransport*) {}
++void send_auth_request(atransport* transport) { kick_transport(transport); }
++int init_jdwp() { return 0; }
++asocket* create_jdwp_service_socket() { return nullptr; }
++asocket* create_jdwp_tracker_service_socket() { return nullptr; }
++asocket* create_app_tracker_service_socket() { return nullptr; }
++unique_fd create_jdwp_connection_fd(pid_t) { return {}; }
++std::string UsbNoPermissionsShortHelpText() { return "Check Linux FunctionFS permissions"; }
++std::string UsbNoPermissionsLongHelpText() { return UsbNoPermissionsShortHelpText(); }
++bool should_enter_tradeinmode() { return false; }
++void enter_tradeinmode(const char*) {}
++bool is_in_tradeinmode() { return false; }
++bool is_in_tradein_evaluation_mode() { return false; }
++bool allow_tradeinmode_command(std::string_view) { return true; }
++
++extern "C" void adbd_fs_config(const char*, int, const char*, uid_t*, gid_t*, mode_t*, uint64_t*) {
++    // Normal Linux permissions are used; Android filesystem policy does not apply.
++}
