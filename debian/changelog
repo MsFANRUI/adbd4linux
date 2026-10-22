@@ -1,3 +1,17 @@
+adbd (1.0.6-1) unstable; urgency=medium
+
+  * usbdevice: load libcomposite/usb_f_fs before creating the gadget, so
+    installation works before systemd-modules-load has run.
+  * usbdevice: retry the configfs function link and UDC bind instead of
+    waiting for FunctionFS "ready", which is not set before link on the
+    RDK X5 6.1 kernel. This fixes the startup deadlock with adbd's
+    FUNCTIONFS_BIND wait.
+  * android-compat: derive brand/manufacturer from the device-tree compatible
+    vendor, strip whitespace from platform fields, and support an optional
+    /etc/android-compat.properties overlay.
+
+ -- wentywenty <2321901849@qq.com>  Fri, 23 Oct 2026 03:00:00 +0800
+
 adbd (1.0.5-1) unstable; urgency=medium
 
   * Add scrcpy-display for a manual Xvfb/XFCE session with configurable

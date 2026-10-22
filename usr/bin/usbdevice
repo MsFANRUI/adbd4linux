@@ -98,20 +98,6 @@ ffs_umount() {
 	umount "${FFS_MOUNTPOINT}" >/dev/null 2>&1 || true
 }
 
-ffs_wait_ready() {
-	# adbd must write its descriptors before configfs can bind the function.
-	remaining=100
-	while [ "${remaining}" -gt 0 ]; do
-		if [ "$(cat "${G}/functions/ffs.adb/ready" 2>/dev/null)" = 1 ]; then
-			return 0
-		fi
-		sleep 0.1
-		remaining=$((remaining - 1))
-	done
-	echo "usbdevice: timed out waiting for adbd FunctionFS descriptors" >&2
-	return 1
-}
-
 gadget_start() {
 	udc=$(first_udc)
 	if [ -z "${udc}" ]; then
@@ -123,6 +109,12 @@ gadget_start() {
 		echo "usbdevice: configfs not available" >&2
 		return 1
 	}
+
+	# The gadget may be installed before the modules-load unit has run.
+	if command -v modprobe >/dev/null 2>&1; then
+		modprobe libcomposite 2>/dev/null || true
+		modprobe usb_f_fs 2>/dev/null || true
+	fi
 
 	if [ -d "${G}" ] && [ -n "$(cat "${G}/UDC" 2>/dev/null)" ]; then
 		echo "usbdevice: gadget already bound"
@@ -151,14 +143,25 @@ gadget_start() {
 	mkdir -p "${G}/functions/ffs.adb"
 	ffs_mount
 	adbd_start
-	ffs_wait_ready
 
-	# FunctionFS must have published its descriptors before configfs accepts
-	# the function link. Removing a stale link also handles a failed prior boot.
-	rm -f "${G}/configs/c.1/ffs.adb"
-	ln -s "${G}/functions/ffs.adb" "${G}/configs/c.1/ffs.adb"
-
-	echo "${udc}" > "${G}/UDC"
+	# Some kernels do not expose FunctionFS "ready" before the configfs
+	# function link. Give adbd a moment, then retry link and UDC bind.
+	remaining=100
+	bound=no
+	while [ "${remaining}" -gt 0 ]; do
+		rm -f "${G}/configs/c.1/ffs.adb"
+		if ln -s "${G}/functions/ffs.adb" "${G}/configs/c.1/ffs.adb" 2>/dev/null &&
+		   echo "${udc}" > "${G}/UDC" 2>/dev/null; then
+			bound=yes
+			break
+		fi
+		sleep 0.1
+		remaining=$((remaining - 1))
+	done
+	if [ "${bound}" != yes ]; then
+		echo "usbdevice: timed out waiting for FunctionFS/configfs bind" >&2
+		exit 1
+	fi
 	echo "usbdevice: bound to ${udc}"
 	trap - EXIT HUP INT TERM
 }

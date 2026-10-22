@@ -89,29 +89,39 @@ def _platform(compatible):
     soc = _first(_read("/sys/devices/soc0/machine"),
                  _read("/sys/devices/soc0/family"))
     if soc:
-        return soc
+        return soc.strip()
     for value in compatible:
         _, _, model = value.partition(",")
+        model = model.strip()
         if model:
             return model
     return _first(_dmi("product_name"), _dmi("board_name"),
-                  platform.machine(), "unknown")
+                  platform.machine(), "unknown").strip() or "unknown"
 
 
 def _hardware(compatible):
     for value in compatible:
-        vendor = value.partition(",")[0]
+        vendor = value.partition(",")[0].strip()
         if vendor:
             return vendor
     return _slug(_first(_dmi("board_vendor"), _dmi("sys_vendor"),
                         platform.machine(), "unknown"))
 
 
+def _compatible_vendor(compatible):
+    for value in compatible:
+        vendor = value.partition(",")[0].strip()
+        if vendor:
+            return vendor
+    return ""
+
+
 def _overlay_paths():
     override = os.environ.get("ANDROID_COMPAT_PROP_FILE")
     if override:
         return [pathlib.Path(override)]
-    return [pathlib.Path("/run/android-compat.properties"),
+    return [pathlib.Path("/etc/android-compat.properties"),
+            pathlib.Path("/run/android-compat.properties"),
             pathlib.Path.home() / ".android-compat.properties"]
 
 
@@ -120,7 +130,8 @@ def _defaults():
     model = _first(_dt("model"), _dmi("product_name"), _dmi("board_name"),
                    "Linux")
     brand = _first(_dt("manufacturer"), _dt("vendor"),
-                   _dmi("sys_vendor"), _dmi("board_vendor"), "Linux")
+                   _dmi("sys_vendor"), _dmi("board_vendor"),
+                   _compatible_vendor(compatible), "Linux")
     device = _slug(model)
     abi = _abi()
     release = os.environ.get("ANDROID_COMPAT_RELEASE", "15")
