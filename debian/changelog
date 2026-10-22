@@ -1,3 +1,14 @@
+adbd (1.0.5-1) unstable; urgency=medium
+
+  * Add scrcpy-display for a manual Xvfb/XFCE session with configurable
+    display, size and depth, plus status, test and stop operations. It does
+    not install a systemd service.
+  * Let app_process source /run/scrcpy-display.env so later scrcpy sessions
+    use the selected display and capture size.
+  * Document the helper in README.md and README_CN.md.
+
+ -- wentywenty <2321901849@qq.com>  Fri, 23 Oct 2026 02:45:00 +0800
+
 adbd (1.0.4-1) unstable; urgency=medium
 
   * Make the Linux port platform-agnostic: resolve python3 through PATH,

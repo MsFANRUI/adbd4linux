@@ -1,0 +1,289 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0
+# Copyright (C) 2026 wentywenty
+set -eu
+
+PROG=$(basename "$0")
+DISPLAY_ARG=:99
+WIDTH=1280
+HEIGHT=720
+DEPTH=24
+NO_XFCE=no
+ACTION=start
+STATE_ROOT=/run/scrcpy-display
+ENV_FILE=/run/scrcpy-display.env
+
+usage() {
+    cat <<EOF
+Usage: $PROG [options]
+
+Start a manual Xvfb + XFCE session for the scrcpy compatibility server.
+This script does not install or manage a systemd service.
+
+Options:
+  --display DISPLAY   X display (default: :99)
+  --width PIXELS      Xvfb width (default: 1280)
+  --height PIXELS     Xvfb height (default: 720)
+  --depth BITS        Xvfb depth (default: 24)
+  --no-xfce           Start Xvfb only
+  --status            Show display/session state and exit
+  --test              Start if needed and capture one frame with ffmpeg
+  --stop              Stop Xvfb/XFCE for this display and exit
+  -h, --help          Show this help
+
+The selected display and size are written to $ENV_FILE. The packaged
+app_process sources that file, so later scrcpy sessions use the same display.
+
+Examples:
+  sudo $PROG
+  sudo $PROG --display :99 --width 1600 --height 900
+  sudo $PROG --status
+  sudo $PROG --test
+  sudo $PROG --stop
+
+Run as root (sudo) for start/test/stop.
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$PROG" "$*" >&2
+    exit 1
+}
+
+need_uint() {
+    case "$1" in
+        ''|*[!0-9]*) die "invalid number: $1" ;;
+    esac
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --display)
+            [ "$#" -ge 2 ] || die "--display requires an argument"
+            DISPLAY_ARG=$2
+            shift
+            ;;
+        --display=*)
+            DISPLAY_ARG=${1#*=}
+            ;;
+        --width)
+            [ "$#" -ge 2 ] || die "--width requires an argument"
+            WIDTH=$2
+            shift
+            ;;
+        --width=*)
+            WIDTH=${1#*=}
+            ;;
+        --height)
+            [ "$#" -ge 2 ] || die "--height requires an argument"
+            HEIGHT=$2
+            shift
+            ;;
+        --height=*)
+            HEIGHT=${1#*=}
+            ;;
+        --depth)
+            [ "$#" -ge 2 ] || die "--depth requires an argument"
+            DEPTH=$2
+            shift
+            ;;
+        --depth=*)
+            DEPTH=${1#*=}
+            ;;
+        --no-xfce)
+            NO_XFCE=yes
+            ;;
+        --status)
+            ACTION=status
+            ;;
+        --test)
+            ACTION=test
+            ;;
+        --stop)
+            ACTION=stop
+            ;;
+        *)
+            die "unknown option: $1 (use --help)"
+            ;;
+    esac
+    shift
+done
+
+case "$DISPLAY_ARG" in
+    :[0-9]*) ;;
+    *) die "display must look like :99" ;;
+esac
+case "$DISPLAY_ARG" in
+    *[!0-9.:]*) die "display contains unsupported characters" ;;
+esac
+need_uint "$WIDTH"
+need_uint "$HEIGHT"
+need_uint "$DEPTH"
+
+DISPLAY=$DISPLAY_ARG
+export DISPLAY
+display_num=${DISPLAY#:}
+display_num=${display_num%%.*}
+socket=/tmp/.X11-unix/X${display_num}
+tag=$(printf '%s' "$DISPLAY" | tr -c 'A-Za-z0-9._-' '_')
+state_dir=$STATE_ROOT/$tag
+
+case "$ACTION" in
+    status) ;;
+    *) [ "$(id -u)" -eq 0 ] || die "run as root (sudo)" ;;
+esac
+
+write_env() {
+    tmp=$ENV_FILE.tmp.$$
+    {
+        printf "export SCRCPY_COMPAT_DISPLAY='%s'\n" "$DISPLAY"
+        printf "export SCRCPY_COMPAT_WIDTH='%s'\n" "$WIDTH"
+        printf "export SCRCPY_COMPAT_HEIGHT='%s'\n" "$HEIGHT"
+    } > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$ENV_FILE"
+}
+
+xvfb_pid() {
+    [ -f "$state_dir/xvfb.pid" ] && cat "$state_dir/xvfb.pid" || true
+}
+
+start_display() {
+    mkdir -p "$state_dir"
+    pid=$(xvfb_pid)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "Xvfb already running on $DISPLAY (pid $pid)"
+    elif pgrep -f "^Xvfb ${DISPLAY}([[:space:]]|$)" >/dev/null 2>&1; then
+        echo "Xvfb already running on $DISPLAY (not started by $PROG)"
+    else
+        command -v Xvfb >/dev/null 2>&1 || die "Xvfb not found"
+        setsid Xvfb "$DISPLAY" -screen 0 "${WIDTH}x${HEIGHT}x${DEPTH}" \
+            -nolisten tcp >"$state_dir/xvfb.log" 2>&1 &
+        echo $! > "$state_dir/xvfb.pid"
+    fi
+
+    i=0
+    while [ "$i" -lt 50 ]; do
+        [ -S "$socket" ] && break
+        i=$((i + 1))
+        sleep 0.1
+    done
+    if [ ! -S "$socket" ]; then
+        cat "$state_dir/xvfb.log" 2>/dev/null >&2 || true
+        die "Xvfb did not create $socket"
+    fi
+
+    write_env
+
+    if [ "$NO_XFCE" = yes ]; then
+        return 0
+    fi
+    if pgrep -x xfce4-session >/dev/null 2>&1; then
+        echo "XFCE already running"
+        return 0
+    fi
+    if ! command -v startxfce4 >/dev/null 2>&1 ||
+       ! command -v dbus-run-session >/dev/null 2>&1; then
+        echo "Warning: startxfce4/dbus-run-session not found; Xvfb is running without a desktop" >&2
+        return 0
+    fi
+    runtime=/tmp/scrcpy-display-runtime-$(id -u)
+    mkdir -p "$runtime"
+    chmod 0700 "$runtime"
+    setsid env DISPLAY="$DISPLAY" XDG_RUNTIME_DIR="$runtime" \
+        dbus-run-session -- startxfce4 >"$state_dir/xfce.log" 2>&1 &
+    echo $! > "$state_dir/xfce.pid"
+    sleep 1
+}
+
+status_display() {
+    echo "display: $DISPLAY"
+    if [ -S "$socket" ]; then
+        echo "socket: $socket"
+    else
+        echo "socket: missing ($socket)"
+    fi
+    pid=$(xvfb_pid)
+    if [ -n "$pid" ]; then
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "Xvfb pid: $pid"
+        else
+            echo "Xvfb pid: $pid (not running)"
+        fi
+    fi
+    pgrep -af '^Xvfb ' || true
+    pgrep -af '^xfce4-session' || true
+    pgrep -af '^xfwm4' || true
+    if command -v xwininfo >/dev/null 2>&1; then
+        DISPLAY="$DISPLAY" xwininfo -root 2>/dev/null | sed -n '1,8p' || true
+    fi
+    if [ -f "$ENV_FILE" ]; then
+        echo "--- $ENV_FILE ---"
+        cat "$ENV_FILE"
+    fi
+}
+
+test_display() {
+    start_display
+    command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found"
+    tmp=$(mktemp /tmp/scrcpy-display-test.XXXXXX.png)
+    if DISPLAY="$DISPLAY" ffmpeg -hide_banner -loglevel error -y \
+        -f x11grab -draw_mouse 0 -video_size "${WIDTH}x${HEIGHT}" \
+        -i "$DISPLAY" -frames:v 1 -f image2 "$tmp"; then
+        ls -l "$tmp"
+        if command -v file >/dev/null 2>&1; then
+            file "$tmp"
+        fi
+        rm -f "$tmp"
+    else
+        rm -f "$tmp"
+        die "ffmpeg could not capture $DISPLAY"
+    fi
+}
+
+stop_display() {
+    pid=$(cat "$state_dir/xfce.pid" 2>/dev/null || true)
+    if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+    fi
+    pkill -x xfce4-session 2>/dev/null || true
+    pkill -x xfwm4 2>/dev/null || true
+
+    pid=$(xvfb_pid)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+    else
+        pids=$(pgrep -f "^Xvfb ${DISPLAY}([[:space:]]|$)" 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            echo "Stopping Xvfb on $DISPLAY not started by $PROG" >&2
+            for p in $pids; do kill "$p" 2>/dev/null || true; done
+        fi
+    fi
+
+    rm -rf "$state_dir"
+    if [ -f "$ENV_FILE" ] && grep -q "SCRCPY_COMPAT_DISPLAY='$DISPLAY'" "$ENV_FILE"; then
+        rm -f "$ENV_FILE"
+    fi
+    echo "Stopped display $DISPLAY"
+}
+
+case "$ACTION" in
+    status)
+        status_display
+        ;;
+    stop)
+        stop_display
+        ;;
+    test)
+        test_display
+        ;;
+    *)
+        start_display
+        echo "Display $DISPLAY is ready (${WIDTH}x${HEIGHT}x${DEPTH})."
+        echo "Run scrcpy on the host."
+        ;;
+esac

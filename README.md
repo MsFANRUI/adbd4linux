@@ -41,7 +41,8 @@
 - A USB port/controller that can act as a **device** (UDC), or a TCP/VSOCK setup.
 - Debian/Ubuntu package management and **systemd** for the packaged service.
 - Host side: `adb`; optional: `scrcpy`.
-- Target side for scrcpy: `Xvfb`, `ffmpeg`, and an X11 desktop/session.
+- Target side for scrcpy: `Xvfb`, `ffmpeg`, and an X11 desktop/session;
+  run `scrcpy-display` (see below).
 - Target side for Android-style commands: Python 3, `ffmpeg`, `x11-utils`,
   `libx11-6`, `libxtst6`, `iproute2`, `procps`.
 
@@ -174,13 +175,16 @@ through the compatibility entry point:
 scrcpy --no-audio
 ```
 
-On the target, start an X server and desktop session first:
+On the target, start the display environment:
 
 ```bash
-Xvfb :99 -screen 0 1280x720x24 &
-export DISPLAY=:99
-# start your desktop/session here
+sudo scrcpy-display
 ```
+
+It starts Xvfb (default `:99`, 1280x720x24) and XFCE, writes
+`/run/scrcpy-display.env` for `app_process`, and supports `--display`,
+`--width`, `--height`, `--depth`, `--no-xfce`, `--status`, `--test` and
+`--stop`. Use `scrcpy-display --help` for details.
 
 Useful environment variables:
 

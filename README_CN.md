@@ -36,7 +36,8 @@
 - 能作为 **device** 工作的 USB 端口/控制器（UDC），或可用的 TCP/VSOCK。
 - Debian/Ubuntu 包管理和 **systemd**。
 - 主机侧：`adb`；可选 `scrcpy`。
-- 目标侧使用 scrcpy：`Xvfb`、`ffmpeg` 和 X11 桌面/会话。
+- 目标侧使用 scrcpy：`Xvfb`、`ffmpeg` 和 X11 桌面/会话；
+  使用 `scrcpy-display` 启动（见下文）。
 - 目标侧使用 Android 风格命令：Python 3、`ffmpeg`、`x11-utils`、`libx11-6`、
   `libxtst6`、`iproute2`、`procps`。
 
@@ -164,13 +165,16 @@ TCP 默认建议只监听回环地址。
 scrcpy --no-audio
 ```
 
-目标侧先启动 X server 和桌面会话：
+目标侧先启动显示环境：
 
 ```bash
-Xvfb :99 -screen 0 1280x720x24 &
-export DISPLAY=:99
-# 在这里启动桌面/会话
+sudo scrcpy-display
 ```
+
+脚本会启动 Xvfb（默认 `:99`、1280x720x24）和 XFCE，写入
+`/run/scrcpy-display.env` 供 `app_process` 使用；支持 `--display`、
+`--width`、`--height`、`--depth`、`--no-xfce`、`--status`、`--test`、
+`--stop`。详细用法见 `scrcpy-display --help`。
 
 常用环境变量：
 

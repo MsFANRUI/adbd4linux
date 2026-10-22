@@ -3,6 +3,10 @@
 # Copyright (C) 2026 wentywenty
 set -eu
 
+if [ -r /run/scrcpy-display.env ]; then
+    . /run/scrcpy-display.env
+fi
+
 export SCRCPY_COMPAT_DISPLAY="${SCRCPY_COMPAT_DISPLAY:-:99}"
 
 python=${PYTHON:-$(command -v python3 2>/dev/null || true)}

@@ -91,6 +91,7 @@ add_custom_command(
 add_custom_target(scrcpy_test_stream ALL DEPENDS "${SCRCPY_TEST_STREAM}")
 
 install(PROGRAMS usr/bin/app_process DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS usr/bin/scrcpy-display DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(PROGRAMS usr/lib/scrcpy-compat/fake_server.py DESTINATION ${CMAKE_INSTALL_LIBDIR}/scrcpy-compat)
 install(FILES "${SCRCPY_TEST_STREAM}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/scrcpy-compat)
 
