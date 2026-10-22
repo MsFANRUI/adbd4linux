@@ -1,2 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0
+// Copyright (C) 2026 wentywenty
 #pragma once
-#define PLATFORM_TOOLS_VERSION "AOSP-master-1cf2f017-Roboparty"
+#define PLATFORM_TOOLS_VERSION "AOSP-master-@ADB_GIT_REV@"

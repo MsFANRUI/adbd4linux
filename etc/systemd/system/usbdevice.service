@@ -1,0 +1,14 @@
+[Unit]
+Description=USB ADB gadget (adbd over FunctionFS)
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ADBD_SHELL is chosen by usbdevice: bash when available, otherwise /bin/sh.
+ExecStart=/usr/bin/usbdevice start
+ExecStop=/usr/bin/usbdevice stop
+
+[Install]
+WantedBy=sysinit.target

@@ -1,5 +1,5 @@
-usb-gadget/usbdevice usr/bin
-usb-gadget/usbdevice.service usr/lib/systemd/system
-usb-gadget/adbd-gadget etc/default
-usb-gadget/usb-gadget.conf etc/modules-load.d
-usb-gadget/usbdevice.sh etc/profile.d
+usr/bin/usbdevice usr/bin
+etc/systemd/system/usbdevice.service usr/lib/systemd/system
+etc/default/adbd-gadget etc/default
+etc/modules-load.d/usb-gadget.conf etc/modules-load.d
+etc/profile.d/usbdevice.sh etc/profile.d

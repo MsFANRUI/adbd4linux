@@ -1,0 +1,26 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0
+# Copyright (C) 2026 wentywenty
+set -eu
+
+name=$(basename "$0")
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+python=${PYTHON:-$(command -v python3 2>/dev/null || true)}
+if [ -z "$python" ]; then
+    printf '%s\n' 'android-compat: python3 is required' >&2
+    exit 127
+fi
+
+for base in \
+    "$dir/../lib/android-compat" \
+    "$dir/../lib" \
+    /usr/local/lib/android-compat \
+    /usr/lib/android-compat \
+    /usr/lib/*/android-compat; do
+    if [ -f "$base/$name.py" ]; then
+        exec "$python" "$base/$name.py" "$@"
+    fi
+done
+
+printf '%s\n' "android-compat: cannot find implementation for '$name'" >&2
+exit 127

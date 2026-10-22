@@ -1,16 +1,30 @@
+# CMake and Debian build trees
 /build*/
 /obj-*/
 /.port-work/
-/output/
+CMakeUserPresets.json
+
+# Debian helper output
 /debian/.debhelper/
 /debian/adbd/
 /debian/adbd-dbgsym/
 /debian/debhelper-build-stamp
 /debian/files
+/debian/tmp/
 /debian/*.debhelper
 /debian/*.debhelper.log
 /debian/*.substvars
+
+# Generated scrcpy fallback stream
+/usr/lib/scrcpy-compat/test.h264
+
+# Local package artifacts
+/output/
 *.deb
+*.ddeb
 *.buildinfo
 *.changes
+
+# Python
 __pycache__/
+*.py[cod]

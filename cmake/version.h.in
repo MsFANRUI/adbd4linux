@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 wentywenty
 #pragma once
 #include <string>
 namespace android::build {
-inline std::string GetBuildNumber() { return "Roboparty"; }
+inline std::string GetBuildNumber() { return "Roboparty-@ADBD_VERSION@-@ADBD_GIT_REV@"; }
 }

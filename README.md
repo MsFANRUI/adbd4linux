@@ -1,104 +1,267 @@
-# RoboParty adbd
+<div align="center">
 
-Device-side AOSP `adbd` port for Debian/Ubuntu Linux, packaged like
-`Roboparty/libsoem`: pinned upstream submodules, one `linux-port.patch`, CMake,
-and standard `debian/` packaging. This builds `/usr/bin/adbd`, not the host `adb`
-client. No kernel source tree or Android platform build is required.
+# adbd for Linux
 
-## Source layout
+**A standalone, framework-free Android Debug Bridge daemon for Debian/Ubuntu.**
 
-| Path | Purpose |
+[English](README.md) · [中文](README_CN.md) · [Development guide](.github/DEVELOPMENT.md)
+
+</div>
+
+> **In one sentence:** this package lets a normal Linux box expose a real `adbd`
+> endpoint over USB (or TCP/VSOCK), so the standard host-side `adb` and `scrcpy`
+> can connect without Android framework, SurfaceFlinger, MediaCodec, or a full
+> Android build tree.
+
+## Why use it?
+
+- **Real `adbd`, not a shim.** Builds the device-side AOSP `adbd` and installs it
+  as `/usr/bin/adbd`.
+- **USB gadget ready.** Includes a generic FunctionFS manager that prepares
+  configfs, mounts FunctionFS, starts `adbd`, and binds the first available UDC.
+- **Network modes when you need them.** Explicit TCP and VSOCK listeners are
+  supported; nothing is exposed by default.
+- **Useful companions.** Optional scrcpy and Android-style command shims make a
+  Linux desktop feel more like an Android target.
+- **No Android platform build.** A small, pinned set of upstream sources plus one
+  Linux portability patch is all that is required.
+
+## What is inside?
+
+| Component | What it gives you |
 | --- | --- |
-| `adb/` | Official AOSP `platform/packages/modules/adb`, tracking `master` |
-| `deps/` | Official AOSP core, libbase, logging and fmt source dependencies |
-| `linux-port.patch` | Consolidated Linux/glibc/GCC and daemon integration changes |
-| `cmake/` | Standalone build targets |
-| `debian/` | Package metadata and debhelper rules |
-| `tests/smoke.py` | Isolated loopback protocol checks |
+| `adbd` | The device-side ADB daemon: shell, file sync, forwarding, and transport handling |
+| `usbdevice` | USB FunctionFS gadget manager and systemd unit |
+| `app_process` + `scrcpy-compat` | Entry point and server used by native scrcpy 5.x |
+| Android command shims | `screencap`, `screenrecord`, `input`, `getprop`, `setprop`, `wm`, `logcat`, `dumpsys`, `settings` |
 
-ADB is pinned to `1cf2f017d312f73b3dc53bda85ef2610e35a80e9` (2025-03-25).
-On 2026-10-21 the official `master` and `main` refs both pointed there. This is
-the requested master snapshot, not a claim that it is the newest Android release.
-`git submodule status` records all exact dependency revisions. Builds never
-update these pins automatically.
+## Requirements
 
-The port incorporates attributed work from `nmeum/android-tools` and
-`happyme531/standalone-linux-adbd`; see `NOTICE`. Neither repository is a build
-dependency. The patch is maintained here against the official source snapshots.
+- Linux with **configfs** and **FunctionFS** support.
+- A USB port/controller that can act as a **device** (UDC), or a TCP/VSOCK setup.
+- Debian/Ubuntu package management and **systemd** for the packaged service.
+- Host side: `adb`; optional: `scrcpy`.
+- Target side for scrcpy: `Xvfb`, `ffmpeg`, and an X11 desktop/session.
+- Target side for Android-style commands: Python 3, `ffmpeg`, `x11-utils`,
+  `libx11-6`, `libxtst6`, `iproute2`, `procps`.
 
-## Build
+> **Security:** `adbd` is an unauthenticated debug endpoint. Keep it on trusted
+> USB, loopback, or a private network. Do not expose `tcp:5555` to untrusted
+> networks.
 
-```sh
-git clone --recurse-submodules https://github.com/Roboparty/adbd.git
+## Install
+
+### Debian/Ubuntu package
+
+```bash
+sudo apt install ./adbd_*.deb
+```
+
+If your package manager needs a dependency repair:
+
+```bash
+sudo dpkg -i adbd_*.deb
+sudo apt-get -f install
+```
+
+The package installs `usbdevice.service` and enables it at `sysinit.target`.
+
+### From source
+
+```bash
+git clone --recurse-submodules <repository-url>
 cd adbd
-git submodule update --init --recursive
 sudo apt-get install build-essential debhelper cmake pkg-config patch \
-    libbrotli-dev liblz4-dev libzstd-dev python3
+    libbrotli-dev liblz4-dev libzstd-dev ffmpeg python3
 dpkg-buildpackage -us -uc -b -j4
 ```
 
-Artifacts appear in the parent directory as `adbd_<version>_<arch>.deb`.
-The binary dynamically links the distribution's libc, C++ and compression
-libraries; Debian records these dependencies automatically. AOSP support
-libraries and fmt are linked into the executable.
+For a local (non-package) install:
 
-For a direct build and protocol check:
-
-```sh
+```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --parallel 4
-python3 tests/smoke.py build/adbd
+sudo cmake --install build --prefix /usr/local
 ```
 
-CMake copies the sources into `<build>/source` and applies the single patch
-there with zero fuzz. Reconfiguration and clean/rebuild leave submodules intact.
-Do not patch the upstream submodules during a package build.
+See the [development guide](.github/DEVELOPMENT.md) for the full build,
+packaging, patching, and CI details.
 
-## Runtime
+## Quick start
 
-Supported: FunctionFS USB, TCP/VSOCK listeners, shell protocol v2, file sync
-(including upstream compression paths), TCP forwarding and reverse transport.
-Android framework authentication, TLS pairing, JDWP, mDNS, APK services and
-Android property-driven lifecycle are not provided. The daemon runs with the
-UID of its launcher. It is an unauthenticated development endpoint.
+### USB
 
-USB uses `/dev/usb-ffs/adb/ep0`, `ep1` and `ep2`. The package includes the
-generic FunctionFS gadget manager (`usbdevice`), its systemd unit, and
-`/etc/default/adbd-gadget`, and enables the unit at sysinit. The BSP remains
-responsible for the USB controller/DTS and any board-specific gadget policy.
+1. Connect the Linux device's **device-capable USB port** to the host.
+2. Check that the gadget came up:
 
-| Environment variable | Meaning |
+   ```bash
+   systemctl status usbdevice.service
+   /usr/bin/usbdevice status
+   ```
+
+3. On the host:
+
+   ```bash
+   adb devices
+   adb shell
+   ```
+
+If the port is in host mode, there is no UDC and the service is a harmless
+no-op. This is normal.
+
+### TCP or VSOCK
+
+Set adbd's network environment for the service with a systemd drop-in:
+
+```bash
+sudo systemctl edit usbdevice.service
+```
+
+```ini
+[Service]
+Environment=ADBD_LISTEN=tcp:127.0.0.1:5555
+```
+
+Then restart:
+
+```bash
+sudo systemctl restart usbdevice.service
+adb connect 127.0.0.1:5555
+```
+
+Use `tcp:5555` only on a trusted network, or `vsock:5555` where VSOCK is
+available. Loopback is the safe default for TCP.
+
+## Configuration
+
+### USB gadget identity
+
+Edit `/etc/default/adbd-gadget` and restart `usbdevice.service`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ADBD_GADGET_IDVENDOR` | `0x18d1` | USB vendor ID |
+| `ADBD_GADGET_IDPRODUCT` | `0x4ee7` | USB product ID |
+| `ADBD_GADGET_NAME` | `adbd` | configfs gadget name |
+| `ADBD_GADGET_BCDDEVICE` | `0x0100` | device revision |
+| `ADBD_GADGET_MANUFACTURER` | device tree / `Linux Foundation` | USB manufacturer string |
+| `ADBD_GADGET_PRODUCT` | `ADB Interface` | USB product string |
+| `ADBD_GADGET_SERIAL` | device tree / machine-id | USB serial string |
+| `ADBD_GADGET_FFS_UID` | user running `usbdevice` | FunctionFS mount owner |
+| `ADBD_GADGET_FFS_GID` | user running `usbdevice` | FunctionFS mount group |
+
+### adbd runtime
+
+| Variable | Meaning |
 | --- | --- |
-| `ADBD_LISTEN` | Explicit comma-separated socket specs, e.g. `tcp:127.0.0.1:5555` or `vsock:5555` |
-| `ADBD_PORT` | TCP port on loopback; used only when `ADBD_LISTEN` is unset |
+| `ADBD_LISTEN` | Comma-separated socket specs, e.g. `tcp:127.0.0.1:5555` or `vsock:5555` |
+| `ADBD_PORT` | Loopback TCP port when `ADBD_LISTEN` is unset |
 | `ADB_TCP_PORT` | Legacy fallback for `ADBD_PORT` |
-| `ADBD_SHELL` | Shell executable, defaults to `/bin/sh` |
-| `ADBD_USB=0` | Disable USB discovery, useful for isolated tests |
+| `ADBD_SHELL` | Shell executable; defaults to `bash` when available, otherwise `/bin/sh` |
+| `ADBD_USB=0` | Disable USB discovery for isolated tests |
 
-No network listener is opened by default. With neither USB nor explicit
-network configuration the daemon exits with an error. To enable network access
-use an explicit socket spec (`tcp:5555` listens on all interfaces); exposing it beyond loopback gives clients shell access
-without authentication. `local:` forwarding uses Linux abstract sockets for
-Rockchip RKNN compatibility; `localfilesystem:` keeps filesystem semantics.
+Put service environment variables in a `systemd` drop-in as shown above, or
+export them before running `usbdevice` manually.
 
-The smoke test checks no implicit listener, ADB handshake, shell stdout/stderr
-and exit status, a 256 KiB binary push/pull, and TCP forwarding. It does not use
-an adb server or touch USB. Physical FunctionFS enumeration, VSOCK, reverse
-forwarding and compressed transfers require separate integration validation.
+## Companion tools
 
-## Updating and CI
+### scrcpy
 
-```sh
-git -C adb fetch origin master
-git -C adb checkout --detach origin/master
+With native scrcpy 5.x on the host, the target can serve a Linux/X11 desktop
+through the compatibility entry point:
+
+```bash
+scrcpy --no-audio
 ```
 
-Review upstream changes, rebase `linux-port.patch`, update the recorded revision
-and Debian changelog, then rebuild and run tests. Dependency updates are also
-explicit. A branch setting alone does not change the recorded submodule commit.
+On the target, start an X server and desktop session first:
 
-CI builds amd64 on `ubuntu-22.04` and arm64 on `[self-hosted, rk3588]`, following
-libsoem. It tests the extracted package and publishes artifacts on each build.
-A tag must equal the **full Debian version**, e.g.
-`v1.0.41+git20250325.1cf2f017-3`. A Release is published only after both builds
-and their protocol checks pass.
+```bash
+Xvfb :99 -screen 0 1280x720x24 &
+export DISPLAY=:99
+# start your desktop/session here
+```
+
+Useful environment variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `SCRCPY_COMPAT_DISPLAY` | X11 display, default `:99` |
+| `SCRCPY_COMPAT_WIDTH` / `SCRCPY_COMPAT_HEIGHT` | Captured size |
+| `SCRCPY_COMPAT_FFMPEG` | ffmpeg executable |
+| `SCRCPY_COMPAT_DEVICE_NAME` | Device name shown by scrcpy |
+| `SCRCPY_COMPAT_UINPUT_NAME` | uinput device name |
+
+This is a Linux/Xvfb compatibility layer, not a full Android scrcpy server:
+audio is disabled, Android clipboard/notifications/camera are not provided, and
+non-ASCII text injection is skipped.
+
+### Android-style commands
+
+The package installs familiar command names:
+
+| Command | Purpose |
+| --- | --- |
+| `screencap` | Screenshot; `-p` writes PNG |
+| `screenrecord` | MP4 recording; supports `--size`, `--bit-rate`, `--time-limit` |
+| `input` | `text`, `keyevent`, `tap`, `swipe`, `draganddrop`, `motionevent`, `roll`, `keycombination` |
+| `getprop` / `setprop` | Read/write compatibility properties |
+| `wm` | `wm size` and `wm density` (read-only) |
+| `logcat` | Maps to `journalctl` |
+| `dumpsys` | `uptime`, `meminfo`, `cpuinfo`, `activity`, `can`, `thermal`, `power`, `battery`, `display`, `adb` |
+| `settings` | `get`, `put`, `delete`, `list` backed by JSON |
+
+Examples:
+
+```bash
+adb exec-out screencap -p > shot.png
+adb shell input tap 100 200
+adb shell input text "hello"
+adb shell input keyevent KEYCODE_HOME
+adb shell screenrecord --time-limit 10 /tmp/demo.mp4
+adb shell dumpsys can
+adb shell getprop ro.product.model
+adb shell wm size
+adb logcat -d -t 100
+```
+
+`input text` supports ASCII/Latin-1 only; non-ASCII characters are skipped.
+`wm` cannot resize Xvfb and returns failure for write operations.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `adb devices` is empty | `systemctl status usbdevice.service`; `/usr/bin/usbdevice status`; `dmesg`; host USB cable/port |
+| Service starts but no device | Does the port support device mode? Is a UDC present under `/sys/class/udc`? |
+| `usbdevice` reports no UDC | The port is in host mode; this is a no-op, not a failure |
+| scrcpy opens but has no video | `Xvfb :99`, the desktop session, and `/usr/bin/ffmpeg` on the target |
+| scrcpy input is missing | Check `DISPLAY`, `libX11`/`libXtst`, or fall back to `/dev/uinput` |
+| Chinese text input is ignored | `input text` only covers ASCII/Latin-1 |
+| Service fails to start | `journalctl -u usbdevice.service -b` and `journalctl -u adbd` |
+| Network access is denied | Add an explicit `ADBD_LISTEN` socket spec; loopback is safer |
+
+## Security notes
+
+- `adbd` has **no authentication** and no TLS pairing. Anyone who can reach the
+  endpoint can get a shell as the user running `adbd`.
+- Prefer USB or `tcp:127.0.0.1:...`; never expose `tcp:5555` to an untrusted LAN.
+- The gadget manager needs root to write configfs and mount FunctionFS.
+- `ADBD_USB=0` is useful for tests that must not touch USB.
+
+## Development
+
+Development documentation lives in [`.github/DEVELOPMENT.md`](.github/DEVELOPMENT.md)
+(Chinese: [`.github/DEVELOPMENT_CN.md`](.github/DEVELOPMENT_CN.md)). It covers:
+
+- source layout and pinned upstream revisions
+- building, packaging, and applying the Linux portability patch
+- USB gadget and scrcpy protocol internals
+- test commands, CI, and release process
+- portability boundaries and validation status
+
+## License
+
+The Linux port, packaging, and companion tools are licensed under **GPL-3.0**.
+Upstream AOSP components, fmt, and the adapted patch retain their original
+licenses. See `debian/copyright` and `LICENSE`.

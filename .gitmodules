@@ -1,20 +1,20 @@
 [submodule "adb"]
-	path = adb
+	path = thirdparty/adb
 	url = https://android.googlesource.com/platform/packages/modules/adb
 	branch = master
-[submodule "deps/core"]
-	path = deps/core
+[submodule "thirdparty/core"]
+	path = thirdparty/core
 	url = https://android.googlesource.com/platform/system/core
 	branch = master
-[submodule "deps/libbase"]
-	path = deps/libbase
+[submodule "thirdparty/libbase"]
+	path = thirdparty/libbase
 	url = https://android.googlesource.com/platform/system/libbase
 	branch = master
-[submodule "deps/logging"]
-	path = deps/logging
+[submodule "thirdparty/logging"]
+	path = thirdparty/logging
 	url = https://android.googlesource.com/platform/system/logging
 	branch = master
-[submodule "deps/fmtlib"]
-	path = deps/fmtlib
+[submodule "thirdparty/fmtlib"]
+	path = thirdparty/fmtlib
 	url = https://android.googlesource.com/platform/external/fmtlib
 	branch = master

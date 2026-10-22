@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0
+# Copyright (C) 2026 wentywenty
+set -eu
+
+export SCRCPY_COMPAT_DISPLAY="${SCRCPY_COMPAT_DISPLAY:-:99}"
+
+python=${PYTHON:-$(command -v python3 2>/dev/null || true)}
+if [ -z "$python" ]; then
+    printf '%s\n' 'scrcpy compatibility server requires python3' >&2
+    exit 127
+fi
+
+for server in \
+    /usr/local/lib/scrcpy-compat/fake_server.py \
+    /usr/lib/scrcpy-compat/fake_server.py \
+    /usr/lib/*/scrcpy-compat/fake_server.py \
+    "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/../lib/scrcpy-compat/fake_server.py"; do
+    if [ -f "$server" ]; then
+        exec "$python" "$server" "$@"
+    fi
+done
+
+printf '%s\n' 'scrcpy compatibility server is not installed' >&2
+exit 127
