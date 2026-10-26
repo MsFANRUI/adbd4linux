@@ -1,0 +1,13 @@
+[Unit]
+Description=USB NCM network (DHCP/NAT)
+After=usbdevice.service network.target
+PartOf=usbdevice.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/usbnetwork start
+ExecStop=/usr/bin/usbnetwork stop
+
+[Install]
+WantedBy=multi-user.target

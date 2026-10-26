@@ -32,6 +32,8 @@
 | --- | --- |
 | `adbd` | The device-side ADB daemon: shell, file sync, forwarding, and transport handling |
 | `usbdevice` | USB FunctionFS gadget manager and systemd unit |
+| `usbnetwork` | Optional NCM DHCP/NAT service for the adb gadget |
+| `adbd-smb` | Opt-in Samba share helper; disabled by default |
 | `app_process` + `scrcpy-compat` | Entry point and server used by native scrcpy 5.x |
 | Android command shims | `screencap`, `screenrecord`, `input`, `getprop`, `setprop`, `wm`, `logcat`, `dumpsys`, `settings` |
 
@@ -150,6 +152,68 @@ Edit `/etc/default/adbd-gadget` and restart `usbdevice.service`.
 | `ADBD_GADGET_SERIAL` | device tree / machine-id | USB serial string |
 | `ADBD_GADGET_FFS_UID` | user running `usbdevice` | FunctionFS mount owner |
 | `ADBD_GADGET_FFS_GID` | user running `usbdevice` | FunctionFS mount group |
+
+### USB NCM network
+
+The gadget can expose a CDC-NCM Ethernet function in the same USB configuration
+as adb. Windows 10/11, Linux and macOS use their in-box drivers; no custom INF
+is required:
+
+```bash
+sudo sed -i 's/^#\?ADBD_GADGET_NET=.*/ADBD_GADGET_NET=ncm/' /etc/default/adbd-gadget
+sudo systemctl restart usbdevice.service
+sudo systemctl restart usbnetwork.service
+systemctl status usbnetwork.service
+ip -4 addr show usb0
+```
+
+`usbnetwork.service` is enabled but does nothing while `ADBD_GADGET_NET` is
+`none`. When enabled it assigns `192.168.42.1/24` to `usb0`, serves DHCP with
+dnsmasq, and NATs `192.168.42.0/24` to the board's default uplink. The service
+may be disabled with `systemctl disable usbnetwork.service`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ADBD_GADGET_NET` | `none` | Add the NCM function; set to `ncm` to enable |
+| `ADBD_GADGET_NCM_FUNCTION` | `ncm.usb0` | configfs NCM function name |
+| `ADBD_USBNET_IFACE` | `usb0` | NCM network interface |
+| `ADBD_USBNET_ADDRESS` | `192.168.42.1` | Board address on the USB network |
+| `ADBD_USBNET_PREFIX` | `24` | Address prefix |
+| `ADBD_USBNET_NETWORK` | `192.168.42.0/24` | Subnet used by the NAT rule |
+| `ADBD_USBNET_DHCP_START` | `192.168.42.100` | First DHCP client address |
+| `ADBD_USBNET_DHCP_END` | `192.168.42.200` | Last DHCP client address |
+| `ADBD_USBNET_DNS` | `1.1.1.1` | DNS server handed to the host |
+| `ADBD_USBNET_UPLINK` | default route | NAT uplink override |
+
+The host gets a DHCP address such as `192.168.42.100`; the board is reachable
+at `192.168.42.1`. Internet access also requires a working uplink and
+`dnsmasq`/`nftables` on the board.
+
+### SMB share (opt-in)
+
+The package recommends Samba but does not configure a share by default. After
+NCM is working, enable it once:
+
+```bash
+sudo adbd-smb enable
+```
+
+The command adds the `/home/robo` share to `/etc/samba/smb.conf`, prompts for
+the SMB password when the user is not yet registered, validates the config
+and starts `smbd`. The Windows path is:
+
+```text
+\\192.168.42.1\robo
+```
+
+```bash
+sudo adbd-smb status
+sudo adbd-smb disable
+```
+
+Settings live in `/etc/default/adbd-smb`; the share is restricted to
+`192.168.42.0/24` and loopback. `adbd-smb disable` removes the share and stops
+`smbd`.
 
 ### adbd runtime
 

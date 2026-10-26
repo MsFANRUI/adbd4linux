@@ -27,6 +27,8 @@
 | --- | --- |
 | `adbd` | 设备端 ADB 守护进程：shell、文件同步、端口转发和传输处理 |
 | `usbdevice` | USB FunctionFS gadget 管理器和 systemd 服务 |
+| `usbnetwork` | adb gadget 的可选 NCM DHCP/NAT 服务 |
+| `adbd-smb` | 可选的 Samba 共享助手；默认不启用 |
 | `app_process` + `scrcpy-compat` | 原生 scrcpy 5.x 使用的入口和服务端 |
 | Android 命令兼容层 | `screencap`、`screenrecord`、`input`、`getprop`、`setprop`、`wm`、`logcat`、`dumpsys`、`settings` |
 
@@ -142,6 +144,69 @@ TCP 默认建议只监听回环地址。
 | `ADBD_GADGET_SERIAL` | 设备树 / machine-id | USB 序列号 |
 | `ADBD_GADGET_FFS_UID` | 运行 `usbdevice` 的用户 | FunctionFS 挂载属主 |
 | `ADBD_GADGET_FFS_GID` | 运行 `usbdevice` 的用户组 | FunctionFS 挂载属组 |
+
+### USB NCM 网络
+
+可以让 gadget 在同一个 USB configuration 里同时提供 adb 和 CDC-NCM 网卡。
+Windows 10/11、Linux 和 macOS 都用系统自带驱动，不需要额外 INF：
+
+```bash
+sudo sed -i 's/^#\?ADBD_GADGET_NET=.*/ADBD_GADGET_NET=ncm/' /etc/default/adbd-gadget
+sudo systemctl restart usbdevice.service
+sudo systemctl restart usbnetwork.service
+systemctl status usbnetwork.service
+ip -4 addr show usb0
+```
+
+`usbnetwork.service` 默认已启用，但 `ADBD_GADGET_NET=none` 时是 no-op。启用后会：
+
+- 给 `usb0` 配 `192.168.42.1/24`
+- 用 dnsmasq 发 DHCP
+- 把 `192.168.42.0/24` NAT 到板子的默认上行
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `ADBD_GADGET_NET` | `none` | 是否加入 NCM 功能，设为 `ncm` 启用 |
+| `ADBD_GADGET_NCM_FUNCTION` | `ncm.usb0` | configfs NCM 功能名 |
+| `ADBD_USBNET_IFACE` | `usb0` | NCM 网卡名 |
+| `ADBD_USBNET_ADDRESS` | `192.168.42.1` | 板端 USB 网络地址 |
+| `ADBD_USBNET_PREFIX` | `24` | 前缀长度 |
+| `ADBD_USBNET_NETWORK` | `192.168.42.0/24` | NAT 使用的网段 |
+| `ADBD_USBNET_DHCP_START` | `192.168.42.100` | DHCP 起始地址 |
+| `ADBD_USBNET_DHCP_END` | `192.168.42.200` | DHCP 结束地址 |
+| `ADBD_USBNET_DNS` | `1.1.1.1` | 发给主机的 DNS |
+| `ADBD_USBNET_UPLINK` | 默认路由 | 手动指定 NAT 上行 |
+
+主机一般会拿到 `192.168.42.100` 之类的地址，板子地址是 `192.168.42.1`。
+要上网还需要板子本身有可用上行，并安装 `dnsmasq`/`nftables`。
+
+### SMB 共享（可选）
+
+包会推荐安装 Samba，但默认不配置、不启用共享。NCM 正常后执行一次：
+
+```bash
+sudo adbd-smb enable
+```
+
+命令会：
+
+- 把 `/home/robo` 共享追加到 `/etc/samba/smb.conf`
+- 用户未注册时提示设置 SMB 密码
+- 校验配置并启动 `smbd`
+
+Windows 访问路径：
+
+```text
+\\192.168.42.1\robo
+```
+
+```bash
+sudo adbd-smb status
+sudo adbd-smb disable
+```
+
+配置在 `/etc/default/adbd-smb`；共享默认只允许 `192.168.42.0/24` 和
+loopback。`adbd-smb disable` 会移除共享并停止 `smbd`。
 
 ### adbd 运行环境
 

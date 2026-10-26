@@ -1,0 +1,166 @@
+#!/bin/sh -e
+# SPDX-License-Identifier: GPL-3.0
+# Copyright (C) 2026 wentywenty
+#
+# adbd-smb -- opt-in Samba share over the adbd USB/NCM network.
+#
+# The package does not touch Samba by default. Run `adbd-smb enable` once to
+# add the share and start smbd; `adbd-smb disable` removes it again.
+
+DEFAULTS=/etc/default/adbd-smb
+SMB_CONF=/etc/samba/smb.conf
+BEGIN_MARK="# BEGIN adbd-smb"
+END_MARK="# END adbd-smb"
+
+if [ -r "${DEFAULTS}" ]; then
+	# shellcheck disable=SC1090
+	. "${DEFAULTS}"
+fi
+
+SMB_USER="${ADBD_SMB_USER:-robo}"
+SMB_SHARE="${ADBD_SMB_SHARE:-/home/robo}"
+SMB_SHARE_NAME="${ADBD_SMB_SHARE_NAME:-robo}"
+SMB_WORKGROUP="${ADBD_SMB_WORKGROUP:-WORKGROUP}"
+SMB_HOSTS_ALLOW="${ADBD_SMB_HOSTS_ALLOW:-192.168.42.0/24 127.0.0.1}"
+
+usage() {
+	cat >&2 <<EOF
+Usage: $0 {enable|disable|status}
+
+enable   add the $SMB_SHARE_NAME share, set the SMB password if needed and
+         start smbd
+disable  remove the share and stop smbd
+status   show the configured share and service state
+
+Settings live in $DEFAULTS.
+EOF
+}
+
+need_root() {
+	if [ "$(id -u)" -ne 0 ]; then
+		echo "$0: must be run as root" >&2
+		exit 1
+	fi
+}
+
+block_present() {
+	[ -r "${SMB_CONF}" ] && grep -qF "${BEGIN_MARK}" "${SMB_CONF}"
+}
+
+remove_block() {
+	[ -r "${SMB_CONF}" ] || return 0
+	tmp=$(mktemp)
+	awk -v begin="${BEGIN_MARK}" -v end="${END_MARK}" '
+		$0 == begin { skip = 1; next }
+		$0 == end { skip = 0; next }
+		!skip { print }
+	' "${SMB_CONF}" > "${tmp}"
+	cat "${tmp}" > "${SMB_CONF}"
+	rm -f "${tmp}"
+}
+
+ensure_global_config() {
+	[ -r "${SMB_CONF}" ] && return 0
+	mkdir -p /etc/samba
+	cat > "${SMB_CONF}" <<EOF
+[global]
+   workgroup = ${SMB_WORKGROUP}
+   server string = adbd
+   security = user
+   map to guest = never
+   server min protocol = SMB2
+   disable netbios = yes
+   smb ports = 445
+EOF
+}
+
+add_block() {
+	cat >> "${SMB_CONF}" <<EOF
+${BEGIN_MARK}
+[${SMB_SHARE_NAME}]
+   path = ${SMB_SHARE}
+   browseable = yes
+   read only = no
+   valid users = ${SMB_USER}
+   force user = ${SMB_USER}
+   force group = ${SMB_USER}
+   create mask = 0644
+   directory mask = 0755
+   hosts allow = ${SMB_HOSTS_ALLOW}
+   hosts deny = 0.0.0.0/0
+${END_MARK}
+EOF
+}
+
+smb_user_exists() {
+	command -v pdbedit >/dev/null 2>&1 &&
+		pdbedit -L -u "${SMB_USER}" >/dev/null 2>&1
+}
+
+enable() {
+	need_root
+
+	if ! command -v smbd >/dev/null 2>&1 ||
+	   ! command -v smbpasswd >/dev/null 2>&1; then
+		echo "Samba is not installed. Install it with:" >&2
+		echo "  apt-get install -y samba" >&2
+		exit 1
+	fi
+
+	if [ ! -d "${SMB_SHARE}" ]; then
+		echo "Share path does not exist: ${SMB_SHARE}" >&2
+		exit 1
+	fi
+
+	ensure_global_config
+	remove_block
+	add_block
+
+	if ! testparm -s "${SMB_CONF}" >/dev/null 2>&1; then
+		echo "smb.conf validation failed; removing the adbd-smb share" >&2
+		remove_block
+		exit 1
+	fi
+
+	if ! smb_user_exists; then
+		echo "Setting the SMB password for ${SMB_USER}:"
+		smbpasswd -a "${SMB_USER}"
+	fi
+
+	systemctl enable --now smbd
+	echo "SMB enabled: \\\\192.168.42.1\\${SMB_SHARE_NAME} (user ${SMB_USER})"
+}
+
+disable() {
+	need_root
+	remove_block
+	systemctl disable --now smbd 2>/dev/null || true
+	echo "SMB disabled; the adbd-smb share was removed"
+}
+
+status() {
+	if block_present; then
+		echo "share: ${SMB_SHARE_NAME} -> ${SMB_SHARE} (user ${SMB_USER})"
+	else
+		echo "share: disabled"
+	fi
+	if command -v systemctl >/dev/null 2>&1; then
+		echo "smbd: $(systemctl is-active smbd 2>/dev/null || true)"
+	fi
+}
+
+case "${1:-status}" in
+	enable)
+		enable
+		;;
+	disable)
+		disable
+		;;
+	status)
+		status
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac

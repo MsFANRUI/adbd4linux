@@ -22,3 +22,19 @@ ADBD_GADGET_BCDDEVICE=0x0100
 # FunctionFS mount ownership. Defaults to the user running usbdevice.
 #ADBD_GADGET_FFS_UID=0
 #ADBD_GADGET_FFS_GID=0
+
+# Optional CDC-NCM function, composed with adb in the same USB configuration.
+# Windows 10/11, Linux and macOS see a USB Ethernet adapter; the usbnetwork
+# service configures usb0, DHCP and NAT when this is enabled.
+#ADBD_GADGET_NET=none
+#ADBD_GADGET_NCM_FUNCTION=ncm.usb0
+
+# USB network settings used by /usr/bin/usbnetwork.
+#ADBD_USBNET_IFACE=usb0
+#ADBD_USBNET_ADDRESS=192.168.42.1
+#ADBD_USBNET_PREFIX=24
+#ADBD_USBNET_NETWORK=192.168.42.0/24
+#ADBD_USBNET_DHCP_START=192.168.42.100
+#ADBD_USBNET_DHCP_END=192.168.42.200
+#ADBD_USBNET_DNS=1.1.1.1
+#ADBD_USBNET_UPLINK=end0

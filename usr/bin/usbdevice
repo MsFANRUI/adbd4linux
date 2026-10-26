@@ -25,6 +25,16 @@ fi
 
 GADGET_NAME="${ADBD_GADGET_NAME:-adbd}"
 G="${GADGET_DIR}/${GADGET_NAME}"
+NCM_FUNCTION="${ADBD_GADGET_NCM_FUNCTION:-ncm.usb0}"
+
+NET_MODE="${ADBD_GADGET_NET:-none}"
+case "${NET_MODE}" in
+	none|ncm) ;;
+	*)
+		echo "usbdevice: unsupported ADBD_GADGET_NET=${NET_MODE}" >&2
+		exit 1
+		;;
+esac
 
 idVendor="${ADBD_GADGET_IDVENDOR:-0x18d1}"   # Google
 idProduct="${ADBD_GADGET_IDPRODUCT:-0x4ee7}" # Google ADB interface
@@ -98,6 +108,19 @@ ffs_umount() {
 	umount "${FFS_MOUNTPOINT}" >/dev/null 2>&1 || true
 }
 
+net_prepare() {
+	[ "${NET_MODE}" = ncm ] || return 0
+
+	if command -v modprobe >/dev/null 2>&1; then
+		modprobe usb_f_ncm 2>/dev/null || true
+	fi
+
+	# The CDC-NCM function is composed with adb in the same configuration.
+	mkdir -p "${G}/functions/${NCM_FUNCTION}"
+	rm -f "${G}/configs/c.1/${NCM_FUNCTION}"
+	ln -s "${G}/functions/${NCM_FUNCTION}" "${G}/configs/c.1/${NCM_FUNCTION}"
+}
+
 gadget_start() {
 	udc=$(first_udc)
 	if [ -z "${udc}" ]; then
@@ -131,6 +154,14 @@ gadget_start() {
 	echo "${bcdDevice}" > "${G}/bcdDevice"
 	echo 0x0200 > "${G}/bcdUSB"
 
+	# A composite gadget must use the multi-interface device class on Windows,
+	# otherwise Windows treats it as a single function.
+	if [ "${NET_MODE}" = ncm ]; then
+		echo 0xef > "${G}/bDeviceClass"
+		echo 0x02 > "${G}/bDeviceSubClass"
+		echo 0x01 > "${G}/bDeviceProtocol"
+	fi
+
 	mkdir -p "${G}/strings/0x409"
 	echo "${manufacturer}" > "${G}/strings/0x409/manufacturer"
 	echo "${product}" > "${G}/strings/0x409/product"
@@ -138,11 +169,16 @@ gadget_start() {
 
 	mkdir -p "${G}/configs/c.1/strings/0x409"
 	echo 500 > "${G}/configs/c.1/MaxPower"
-	echo "ADB" > "${G}/configs/c.1/strings/0x409/configuration"
+	if [ "${NET_MODE}" = ncm ]; then
+		echo "ADB + NCM" > "${G}/configs/c.1/strings/0x409/configuration"
+	else
+		echo "ADB" > "${G}/configs/c.1/strings/0x409/configuration"
+	fi
 
 	mkdir -p "${G}/functions/ffs.adb"
 	ffs_mount
 	adbd_start
+	net_prepare
 
 	# Some kernels do not expose FunctionFS "ready" before the configfs
 	# function link. Give adbd a moment, then retry link and UDC bind.
@@ -170,7 +206,10 @@ gadget_stop() {
 	if [ -d "${G}" ]; then
 		echo "" > "${G}/UDC" 2>/dev/null || true
 		adbd_stop
+		rm -f "${G}/os_desc/c.1"
 		rm -f "${G}/configs/c.1/ffs.adb"
+		rm -f "${G}/configs/c.1/${NCM_FUNCTION}"
+		rmdir "${G}/functions/${NCM_FUNCTION}" 2>/dev/null || true
 		rmdir "${G}/configs/c.1/strings/0x409" 2>/dev/null || true
 		rmdir "${G}/configs/c.1" 2>/dev/null || true
 		rmdir "${G}/functions/ffs.adb" 2>/dev/null || true

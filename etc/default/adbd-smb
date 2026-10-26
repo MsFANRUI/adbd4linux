@@ -1,0 +1,17 @@
+# Configuration for the optional adbd-smb helper.
+# Samba is not configured until `adbd-smb enable` is run.
+
+# Linux user allowed to authenticate to the share.
+#ADBD_SMB_USER=robo
+
+# Directory exported to the host.
+#ADBD_SMB_SHARE=/home/robo
+
+# Share name shown to the host: \\192.168.42.1\<name>
+#ADBD_SMB_SHARE_NAME=robo
+
+# Samba workgroup used when smb.conf is created from scratch.
+#ADBD_SMB_WORKGROUP=WORKGROUP
+
+# Client networks allowed to mount the share.
+#ADBD_SMB_HOSTS_ALLOW=192.168.42.0/24 127.0.0.1

@@ -1,1 +1,2 @@
 /usr/lib/systemd/system/usbdevice.service etc/systemd/system/sysinit.target.wants/usbdevice.service
+/usr/lib/systemd/system/usbnetwork.service etc/systemd/system/multi-user.target.wants/usbnetwork.service

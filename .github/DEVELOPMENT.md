@@ -95,16 +95,22 @@ upstream AOSP; it prepares configfs/FunctionFS for adbd and starts
 | Source | Installed path |
 | --- | --- |
 | `usr/bin/usbdevice` | `/usr/bin/usbdevice` (0755) |
+| `usr/bin/usbnetwork` | `/usr/bin/usbnetwork` (0755) |
+| `usr/bin/adbd-smb` | `/usr/bin/adbd-smb` (0755) |
 | `etc/systemd/system/usbdevice.service` | `/usr/lib/systemd/system/usbdevice.service` |
+| `etc/systemd/system/usbnetwork.service` | `/usr/lib/systemd/system/usbnetwork.service` |
 | `etc/default/adbd-gadget` | `/etc/default/adbd-gadget` |
+| `etc/default/adbd-smb` | `/etc/default/adbd-smb` |
 | `etc/modules-load.d/usb-gadget.conf` | `/etc/modules-load.d/usb-gadget.conf` |
 | `etc/profile.d/usbdevice.sh` | `/etc/profile.d/usbdevice.sh` |
 
-`debian/adbd.links` installs the enable link:
+`debian/adbd.links` installs the enable links:
 
 ```text
 /etc/systemd/system/sysinit.target.wants/usbdevice.service
   -> /usr/lib/systemd/system/usbdevice.service
+/etc/systemd/system/multi-user.target.wants/usbnetwork.service
+  -> /usr/lib/systemd/system/usbnetwork.service
 ```
 
 Behavior:
@@ -116,6 +122,12 @@ Behavior:
 - `ExecStop=/usr/bin/usbdevice stop` unbinds the UDC, stops adbd, cleans
   configfs and unmounts FunctionFS.
 - With no UDC (for example a host-mode USB port) it is a harmless no-op.
+- `usbnetwork` is a no-op unless `ADBD_GADGET_NET=ncm`; when enabled it
+  assigns the `usb0` address, serves DHCP with dnsmasq and installs nftables
+  NAT rules for the default uplink.
+- `adbd-smb` is an explicit opt-in helper: it modifies `/etc/samba/smb.conf`,
+  creates the SMB account password and starts `smbd` only when the admin runs
+  `adbd-smb enable`.
 - The USB controller, DTS, board mode and board-specific gadget policy remain
   BSP responsibilities.
 

@@ -1,0 +1,184 @@
+#!/bin/sh -e
+# SPDX-License-Identifier: GPL-3.0
+# Copyright (C) 2026 wentywenty
+#
+# usbnetwork -- optional DHCP/NAT for the NCM function created by usbdevice.
+#
+# The service is installed unconditionally but does nothing unless
+# ADBD_GADGET_NET=ncm in /etc/default/adbd-gadget.
+
+DEFAULTS=/etc/default/adbd-gadget
+RUNDIR=/run/adbd-usbnetwork
+PIDFILE="${RUNDIR}/dnsmasq.pid"
+CONF="${RUNDIR}/dnsmasq.conf"
+
+if [ -r "${DEFAULTS}" ]; then
+	# shellcheck disable=SC1090
+	. "${DEFAULTS}"
+fi
+
+NET_MODE="${ADBD_GADGET_NET:-none}"
+
+USB_IF="${ADBD_USBNET_IFACE:-usb0}"
+USB_ADDR="${ADBD_USBNET_ADDRESS:-192.168.42.1}"
+USB_PREFIX="${ADBD_USBNET_PREFIX:-24}"
+USB_NET="${ADBD_USBNET_NETWORK:-192.168.42.0/24}"
+DHCP_START="${ADBD_USBNET_DHCP_START:-192.168.42.100}"
+DHCP_END="${ADBD_USBNET_DHCP_END:-192.168.42.200}"
+DNS="${ADBD_USBNET_DNS:-1.1.1.1}"
+UPLINK="${ADBD_USBNET_UPLINK:-}"
+
+log() {
+	printf 'usbnetwork: %s\n' "$*"
+}
+
+cleanup_nat() {
+	if command -v nft >/dev/null 2>&1; then
+		nft delete table ip adbd_usbnetwork 2>/dev/null || true
+	fi
+}
+
+stop_dnsmasq() {
+	if [ -r "${PIDFILE}" ]; then
+		pid=$(cat "${PIDFILE}" 2>/dev/null || true)
+		if [ -n "${pid}" ]; then
+			kill "${pid}" 2>/dev/null || true
+		fi
+		rm -f "${PIDFILE}"
+	fi
+	if command -v pkill >/dev/null 2>&1; then
+		pkill -f "dnsmasq --conf-file=${CONF}" 2>/dev/null || true
+	fi
+}
+
+wait_interface() {
+	i=0
+	while [ "${i}" -lt 100 ]; do
+		[ -e "/sys/class/net/${USB_IF}" ] && return 0
+		i=$((i + 1))
+		sleep 0.1
+	done
+	return 1
+}
+
+wait_default_route() {
+	i=0
+	while [ "${i}" -lt 100 ]; do
+		route=$(ip route show default 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}' || true)
+		if [ -n "${route}" ] && [ "${route}" != "${USB_IF}" ]; then
+			printf '%s\n' "${route}"
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 0.1
+	done
+	return 1
+}
+
+stop() {
+	cleanup_nat
+	stop_dnsmasq
+	ip addr del "${USB_ADDR}/${USB_PREFIX}" dev "${USB_IF}" 2>/dev/null || true
+	rm -rf "${RUNDIR}"
+	log "stopped"
+}
+
+start() {
+	if [ "${NET_MODE}" != ncm ]; then
+		stop
+		return 0
+	fi
+
+	if ! wait_interface; then
+		log "${USB_IF} did not appear; NCM is disabled or no UDC is available"
+		return 0
+	fi
+
+	# Remove stale rules and a stale DHCP daemon from a previous run.
+	cleanup_nat
+	stop_dnsmasq
+
+	ip link set "${USB_IF}" up
+	ip addr replace "${USB_ADDR}/${USB_PREFIX}" dev "${USB_IF}"
+
+	mkdir -p "${RUNDIR}"
+	cat > "${CONF}" <<EOF
+port=0
+interface=${USB_IF}
+bind-interfaces
+dhcp-authoritative
+dhcp-range=${DHCP_START},${DHCP_END},12h
+dhcp-option=3,${USB_ADDR}
+dhcp-option=6,${DNS}
+log-dhcp
+EOF
+
+	if command -v dnsmasq >/dev/null 2>&1; then
+		dnsmasq --conf-file="${CONF}" --pid-file="${PIDFILE}"
+		log "DHCP on ${USB_IF}: ${DHCP_START}-${DHCP_END}, dns=${DNS}"
+	else
+		log "dnsmasq is not installed; DHCP disabled"
+	fi
+
+	sysctl -q -w net.ipv4.ip_forward=1 2>/dev/null || log "could not enable IPv4 forwarding"
+
+	if [ -z "${UPLINK}" ]; then
+		UPLINK=$(wait_default_route || true)
+	fi
+	if [ -z "${UPLINK}" ]; then
+		log "no default route; NAT not configured"
+		return 0
+	fi
+	if ! command -v nft >/dev/null 2>&1; then
+		log "nft is not installed; NAT not configured"
+		return 0
+	fi
+
+	if nft -f - <<EOF
+table ip adbd_usbnetwork {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr ${USB_NET} oifname "${UPLINK}" masquerade
+	}
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		iifname "${USB_IF}" oifname "${UPLINK}" accept
+		iifname "${UPLINK}" oifname "${USB_IF}" ct state established,related accept
+	}
+}
+EOF
+	then
+		log "NAT ${USB_NET} -> ${UPLINK}"
+	else
+		log "could not install NAT rules"
+	fi
+}
+
+status() {
+	if [ "${NET_MODE}" != ncm ]; then
+		log "disabled (ADBD_GADGET_NET != ncm)"
+		return 0
+	fi
+	ip -4 addr show dev "${USB_IF}" 2>/dev/null || true
+	if [ -r "${PIDFILE}" ]; then
+		log "dnsmasq pid $(cat "${PIDFILE}")"
+	else
+		log "dnsmasq not running"
+	fi
+}
+
+case "${1:-status}" in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	status)
+		status
+		;;
+	*)
+		echo "Usage: $0 {start|stop|status}" >&2
+		exit 1
+		;;
+esac

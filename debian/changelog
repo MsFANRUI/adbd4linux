@@ -1,3 +1,24 @@
+adbd (1.0.7-1) unstable; urgency=medium
+
+  * usbdevice: add an optional CDC-NCM network function alongside adb in the
+    same USB configuration. Enable it with ADBD_GADGET_NET=ncm; the default
+    remains adb-only.
+  * usbdevice: use the USB composite device class (0xEF/0x02/0x01) when NCM is
+    enabled, so Windows enumerates the gadget as a composite device and uses
+    its in-box NCM driver.
+  * Add usbnetwork and usbnetwork.service: configure usb0, serve DHCP with
+    dnsmasq and NAT the USB subnet to the board's default uplink. The service
+    is a no-op unless ADBD_GADGET_NET=ncm.
+  * Add the optional adbd-smb helper. Samba is recommended but not configured
+    by default; `adbd-smb enable` adds the /home/robo share, sets the SMB
+    password when needed, and starts smbd. `adbd-smb disable` reverses it.
+  * Document the NCM network settings, the opt-in SMB share, and the
+    Linux/Windows host setup.
+  * Do not ship a Windows companion INF: Windows 10/11, Linux and macOS have
+    in-box NCM drivers.
+
+ -- wentywenty <2321901849@qq.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
 adbd (1.0.6-1) unstable; urgency=medium
 
   * usbdevice: load libcomposite/usb_f_fs before creating the gadget, so
