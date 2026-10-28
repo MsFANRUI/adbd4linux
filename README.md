@@ -153,7 +153,11 @@ Edit `/etc/default/adbd-gadget` and restart `usbdevice.service`.
 | `ADBD_GADGET_FFS_UID` | user running `usbdevice` | FunctionFS mount owner |
 | `ADBD_GADGET_FFS_GID` | user running `usbdevice` | FunctionFS mount group |
 
-### USB NCM network
+### USB NCM network (disabled by default)
+
+USB networking, including its DHCP/NAT internet sharing, is off by default:
+`ADBD_GADGET_NET=none` and `usbnetwork.service` is not enabled. Only adb is
+exposed.
 
 The gadget can expose a CDC-NCM Ethernet function in the same USB configuration
 as adb. Windows 10/11, Linux and macOS use their in-box drivers; no custom INF
@@ -161,16 +165,23 @@ is required:
 
 ```bash
 sudo sed -i 's/^#\?ADBD_GADGET_NET=.*/ADBD_GADGET_NET=ncm/' /etc/default/adbd-gadget
+sudo systemctl enable usbnetwork.service
 sudo systemctl restart usbdevice.service
 sudo systemctl restart usbnetwork.service
 systemctl status usbnetwork.service
 ip -4 addr show usb0
 ```
 
-`usbnetwork.service` is enabled but does nothing while `ADBD_GADGET_NET` is
-`none`. When enabled it assigns `192.168.42.1/24` to `usb0`, serves DHCP with
-dnsmasq, and NATs `192.168.42.0/24` to the board's default uplink. The service
-may be disabled with `systemctl disable usbnetwork.service`.
+To disable it again:
+
+```bash
+sudo sed -i 's/^#\?ADBD_GADGET_NET=.*/ADBD_GADGET_NET=none/' /etc/default/adbd-gadget
+sudo systemctl disable --now usbnetwork.service
+sudo systemctl restart usbdevice.service
+```
+
+When enabled, `usbnetwork.service` assigns `192.168.42.1/24` to `usb0`, serves
+DHCP with dnsmasq, and NATs `192.168.42.0/24` to the board's default uplink.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

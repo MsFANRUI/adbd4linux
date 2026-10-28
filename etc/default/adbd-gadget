@@ -26,7 +26,8 @@ ADBD_GADGET_BCDDEVICE=0x0100
 # Optional CDC-NCM function, composed with adb in the same USB configuration.
 # Windows 10/11, Linux and macOS see a USB Ethernet adapter; the usbnetwork
 # service configures usb0, DHCP and NAT when this is enabled.
-#ADBD_GADGET_NET=none
+# USB networking (and its DHCP/NAT "internet sharing") is disabled by default.
+ADBD_GADGET_NET=none
 #ADBD_GADGET_NCM_FUNCTION=ncm.usb0
 
 # USB network settings used by /usr/bin/usbnetwork.

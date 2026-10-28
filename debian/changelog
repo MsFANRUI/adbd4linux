@@ -1,3 +1,12 @@
+adbd (1.0.8-1) unstable; urgency=medium
+
+  * Disable USB networking by default: set ADBD_GADGET_NET=none explicitly and
+    stop installing the usbnetwork.service enable link. Only adb is exposed
+    after installation; the NCM DHCP/NAT "internet sharing" path is now fully
+    opt-in.
+
+ -- wentywenty <2321901849@qq.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
 adbd (1.0.7-1) unstable; urgency=medium
 
   * usbdevice: add an optional CDC-NCM network function alongside adb in the

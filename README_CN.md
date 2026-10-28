@@ -145,20 +145,32 @@ TCP 默认建议只监听回环地址。
 | `ADBD_GADGET_FFS_UID` | 运行 `usbdevice` 的用户 | FunctionFS 挂载属主 |
 | `ADBD_GADGET_FFS_GID` | 运行 `usbdevice` 的用户组 | FunctionFS 挂载属组 |
 
-### USB NCM 网络
+### USB NCM 网络（默认禁用）
 
-可以让 gadget 在同一个 USB configuration 里同时提供 adb 和 CDC-NCM 网卡。
-Windows 10/11、Linux 和 macOS 都用系统自带驱动，不需要额外 INF：
+USB 网络（含 DHCP/NAT 供网）默认关闭：`ADBD_GADGET_NET=none`，且
+`usbnetwork.service` 不自启动，只保留 adb 功能。
+
+需要时可以让 gadget 在同一个 USB configuration 里同时提供 adb 和 CDC-NCM
+网卡。Windows 10/11、Linux 和 macOS 都用系统自带驱动，不需要额外 INF：
 
 ```bash
 sudo sed -i 's/^#\?ADBD_GADGET_NET=.*/ADBD_GADGET_NET=ncm/' /etc/default/adbd-gadget
+sudo systemctl enable usbnetwork.service
 sudo systemctl restart usbdevice.service
 sudo systemctl restart usbnetwork.service
 systemctl status usbnetwork.service
 ip -4 addr show usb0
 ```
 
-`usbnetwork.service` 默认已启用，但 `ADBD_GADGET_NET=none` 时是 no-op。启用后会：
+重新禁用：
+
+```bash
+sudo sed -i 's/^#\?ADBD_GADGET_NET=.*/ADBD_GADGET_NET=none/' /etc/default/adbd-gadget
+sudo systemctl disable --now usbnetwork.service
+sudo systemctl restart usbdevice.service
+```
+
+启用后 `usbnetwork.service` 会：
 
 - 给 `usb0` 配 `192.168.42.1/24`
 - 用 dnsmasq 发 DHCP

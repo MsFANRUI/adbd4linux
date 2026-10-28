@@ -109,9 +109,11 @@ upstream AOSP; it prepares configfs/FunctionFS for adbd and starts
 ```text
 /etc/systemd/system/sysinit.target.wants/usbdevice.service
   -> /usr/lib/systemd/system/usbdevice.service
-/etc/systemd/system/multi-user.target.wants/usbnetwork.service
-  -> /usr/lib/systemd/system/usbnetwork.service
 ```
+
+`usbnetwork.service` is installed without an enable link. USB networking is
+disabled by default; an administrator must run
+`systemctl enable usbnetwork.service` and set `ADBD_GADGET_NET=ncm` to use it.
 
 Behavior:
 
@@ -122,9 +124,10 @@ Behavior:
 - `ExecStop=/usr/bin/usbdevice stop` unbinds the UDC, stops adbd, cleans
   configfs and unmounts FunctionFS.
 - With no UDC (for example a host-mode USB port) it is a harmless no-op.
-- `usbnetwork` is a no-op unless `ADBD_GADGET_NET=ncm`; when enabled it
-  assigns the `usb0` address, serves DHCP with dnsmasq and installs nftables
-  NAT rules for the default uplink.
+- `usbnetwork` is not started by default; only after an administrator enables
+  the unit and sets `ADBD_GADGET_NET=ncm` does it assign the `usb0` address,
+  serve DHCP with dnsmasq and install nftables NAT rules for the default
+  uplink.
 - `adbd-smb` is an explicit opt-in helper: it modifies `/etc/samba/smb.conf`,
   creates the SMB account password and starts `smbd` only when the admin runs
   `adbd-smb enable`.

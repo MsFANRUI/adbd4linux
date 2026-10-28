@@ -102,9 +102,11 @@ changelog，再重新构建。只改分支设置不会改变已记录的子模�
 ```text
 /etc/systemd/system/sysinit.target.wants/usbdevice.service
   -> /usr/lib/systemd/system/usbdevice.service
-/etc/systemd/system/multi-user.target.wants/usbnetwork.service
-  -> /usr/lib/systemd/system/usbnetwork.service
 ```
+
+`usbnetwork.service` 只安装单元、不创建自启动链接；USB 网络默认禁用，
+需要管理员手动 `systemctl enable usbnetwork.service` 并设置
+`ADBD_GADGET_NET=ncm`。
 
 行为：
 
@@ -115,8 +117,8 @@ changelog，再重新构建。只改分支设置不会改变已记录的子模�
 - `ExecStop=/usr/bin/usbdevice stop` 解绑 UDC、停止 adbd、清理 configfs，
   并卸载 FunctionFS。
 - 没有 UDC（例如 USB 口处于 host 模式）时是无害的 no-op。
-- `usbnetwork` 在 `ADBD_GADGET_NET=ncm` 之前都是 no-op；启用后配置
-  `usb0` 地址、用 dnsmasq 发 DHCP，并给默认上行安装 nftables NAT 规则。
+- `usbnetwork` 默认不启动；`ADBD_GADGET_NET=ncm` 且服务被手动启用后，才
+  配置 `usb0` 地址、用 dnsmasq 发 DHCP，并给默认上行安装 nftables NAT 规则。
 - `adbd-smb` 是显式 opt-in：只有管理员执行 `adbd-smb enable` 时才会修改
   `/etc/samba/smb.conf`、创建 SMB 密码并启动 `smbd`。
 - USB 控制器、DTS、板级模式和板级 gadget 策略仍由 BSP 负责。
