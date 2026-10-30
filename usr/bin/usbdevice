@@ -82,11 +82,23 @@ adbd_start() {
 		shell=$(command -v bash 2>/dev/null || true)
 		[ -n "${shell}" ] || shell=/bin/sh
 	fi
-	ADBD_SHELL="${shell}" setsid "${ADBD}" >/tmp/adbd.log 2>&1 &
+	ADBD_SHELL="${shell}" ADBD_GADGET_UDC_PATH="${G}/UDC" \
+		ADBD_GADGET_UDC="${udc}" setsid "${ADBD}" >/tmp/adbd.log 2>&1 &
 }
 
 adbd_stop() {
 	pkill -x adbd >/dev/null 2>&1 || true
+	# Let the daemon exit before tearing down configfs, so a reconnect cannot
+	# race the intentional unbind performed by stop/restart.
+	remaining=50
+	while pidof adbd >/dev/null 2>&1; do
+		[ "${remaining}" -gt 0 ] || {
+			echo "usbdevice: adbd did not stop; leaving gadget intact" >&2
+			return 1
+		}
+		sleep 0.1
+		remaining=$((remaining - 1))
+	done
 }
 
 ffs_mount() {
@@ -177,17 +189,17 @@ gadget_start() {
 
 	mkdir -p "${G}/functions/ffs.adb"
 	ffs_mount
-	adbd_start
 	net_prepare
+	rm -f "${G}/configs/c.1/ffs.adb"
+	ln -s "${G}/functions/ffs.adb" "${G}/configs/c.1/ffs.adb"
+	adbd_start
 
-	# Some kernels do not expose FunctionFS "ready" before the configfs
-	# function link. Give adbd a moment, then retry link and UDC bind.
+	# adbd binds after writing descriptors and opening the endpoints, including
+	# every reopen after a disconnect. Only one process writes the binding.
 	remaining=100
 	bound=no
 	while [ "${remaining}" -gt 0 ]; do
-		rm -f "${G}/configs/c.1/ffs.adb"
-		if ln -s "${G}/functions/ffs.adb" "${G}/configs/c.1/ffs.adb" 2>/dev/null &&
-		   echo "${udc}" > "${G}/UDC" 2>/dev/null; then
+		if [ "$(cat "${G}/UDC" 2>/dev/null)" = "${udc}" ]; then
 			bound=yes
 			break
 		fi
@@ -203,9 +215,9 @@ gadget_start() {
 }
 
 gadget_stop() {
+	adbd_stop || return 1
 	if [ -d "${G}" ]; then
 		echo "" > "${G}/UDC" 2>/dev/null || true
-		adbd_stop
 		rm -f "${G}/os_desc/c.1"
 		rm -f "${G}/configs/c.1/ffs.adb"
 		rm -f "${G}/configs/c.1/${NCM_FUNCTION}"
